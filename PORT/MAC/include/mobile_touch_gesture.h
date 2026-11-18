@@ -21,8 +21,17 @@ struct MobileTouchGestureOutput {
 	MobileTouchGestureEvent events[4];
 };
 
+/*
+ * How far, in game pixels, a finger may wander and still count as a tap, and
+ * how long a still finger must stay down to right click. iOS uses about 10
+ * points and half a second for the same decisions.
+ */
+static const int MobileTouchGesture_DragSlop = 10;
+static const unsigned long MobileTouchGesture_LongPressMs = 450;
+
 struct MobileTouchGesture {
 	int primary_active;
+	int immediate;
 	int secondary_active;
 	int left_down;
 	int dragging;
@@ -44,9 +53,8 @@ static inline int MobileTouchGesture_Abs(int value)
 
 static inline int MobileTouchGesture_MovedPastSlop(MobileTouchGesture const *touch, int x, int y)
 {
-	static const int drag_slop = 6;
-	return MobileTouchGesture_Abs(x - touch->start_x) > drag_slop ||
-		MobileTouchGesture_Abs(y - touch->start_y) > drag_slop;
+	return MobileTouchGesture_Abs(x - touch->start_x) > MobileTouchGesture_DragSlop ||
+		MobileTouchGesture_Abs(y - touch->start_y) > MobileTouchGesture_DragSlop;
 }
 
 static inline void MobileTouchGesture_ClearOutput(MobileTouchGestureOutput *out)
@@ -79,6 +87,7 @@ static inline void MobileTouchGesture_Init(MobileTouchGesture *touch)
 		return;
 	}
 	touch->primary_active = 0;
+	touch->immediate = 0;
 	touch->secondary_active = 0;
 	touch->left_down = 0;
 	touch->dragging = 0;
@@ -121,6 +130,11 @@ static inline void MobileTouchGesture_Begin(
 		return;
 	}
 
+	/* A button held down by an immediate press ignores other fingers. */
+	if (touch->immediate) {
+		return;
+	}
+
 	if (!touch->secondary_active) {
 		touch->secondary_active = 1;
 		touch->secondary_finger = finger;
@@ -131,6 +145,44 @@ static inline void MobileTouchGesture_Begin(
 			touch->dragging = 0;
 		}
 	}
+}
+
+/*
+ * Starts a touch that presses the left button at once, like a mouse, for
+ * places where no tap, drag or long-press gesture needs to be told apart:
+ * menus, dialogs and sidebar buttons. The button is released where it was
+ * pressed unless the finger moves past the tap slop, in which case it drags.
+ */
+static inline void MobileTouchGesture_BeginPress(
+	MobileTouchGesture *touch,
+	long long finger,
+	int x,
+	int y,
+	unsigned long tick,
+	MobileTouchGestureOutput *out)
+{
+	MobileTouchGesture_ClearOutput(out);
+	if (!touch) {
+		return;
+	}
+	if (touch->primary_active) {
+		MobileTouchGesture_Begin(touch, finger, x, y, tick, out);
+		return;
+	}
+
+	touch->primary_active = 1;
+	touch->immediate = 1;
+	touch->primary_finger = finger;
+	touch->start_x = x;
+	touch->start_y = y;
+	touch->last_x = x;
+	touch->last_y = y;
+	touch->down_tick = tick;
+	touch->left_down = 1;
+	touch->dragging = 0;
+	touch->long_press_sent = 0;
+	touch->tap_cancelled = 1;
+	MobileTouchGesture_Add(out, MOBILE_TOUCH_LEFT_DOWN, x, y, 0);
 }
 
 static inline void MobileTouchGesture_Move(
@@ -145,13 +197,21 @@ static inline void MobileTouchGesture_Move(
 		return;
 	}
 
-	if (!touch->left_down && !touch->secondary_active && MobileTouchGesture_MovedPastSlop(touch, x, y)) {
+	/*
+	 * tap_cancelled without left_down means a second finger joined: the finger
+	 * left behind after a two-finger scroll must not start a selection box.
+	 */
+	if (!touch->left_down && !touch->secondary_active && !touch->tap_cancelled &&
+			MobileTouchGesture_MovedPastSlop(touch, x, y)) {
 		touch->left_down = 1;
 		touch->dragging = 1;
 		touch->tap_cancelled = 1;
 		MobileTouchGesture_Add(out, MOBILE_TOUCH_LEFT_DOWN, touch->start_x, touch->start_y, 1);
 	}
-	if (touch->left_down) {
+	if (touch->immediate && !touch->dragging && MobileTouchGesture_MovedPastSlop(touch, x, y)) {
+		touch->dragging = 1;
+	}
+	if (touch->left_down && touch->dragging) {
 		MobileTouchGesture_Add(out, MOBILE_TOUCH_MOUSE_MOVE, x, y, 1);
 	}
 
@@ -164,8 +224,6 @@ static inline void MobileTouchGesture_Update(
 	unsigned long tick,
 	MobileTouchGestureOutput *out)
 {
-	static const unsigned long long_press_ms = 650;
-
 	MobileTouchGesture_ClearOutput(out);
 	if (!touch || !touch->primary_active || touch->secondary_active ||
 			touch->left_down || touch->long_press_sent || touch->tap_cancelled) {
@@ -174,7 +232,7 @@ static inline void MobileTouchGesture_Update(
 	if (MobileTouchGesture_MovedPastSlop(touch, touch->last_x, touch->last_y)) {
 		return;
 	}
-	if ((unsigned long)(tick - touch->down_tick) < long_press_ms) {
+	if ((unsigned long)(tick - touch->down_tick) < MobileTouchGesture_LongPressMs) {
 		return;
 	}
 
@@ -216,7 +274,10 @@ static inline void MobileTouchGesture_End(
 		return;
 	}
 
-	if (touch->left_down) {
+	if (touch->left_down && !touch->dragging) {
+		/* An immediate press that stayed put releases where it pressed. */
+		MobileTouchGesture_Add(out, MOBILE_TOUCH_LEFT_UP, touch->start_x, touch->start_y, 0);
+	} else if (touch->left_down) {
 		if (x != touch->last_x || y != touch->last_y) {
 			MobileTouchGesture_Add(out, MOBILE_TOUCH_MOUSE_MOVE, x, y, 1);
 		}

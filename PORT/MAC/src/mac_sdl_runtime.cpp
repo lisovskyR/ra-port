@@ -82,6 +82,8 @@ static bool MobileTouchCursorHidden = true;
 static bool MobilePointerDragCandidate = false;
 static int MobilePointerDragStartX = 0;
 static int MobilePointerDragStartY = 0;
+/* Set by the game: whether a touch at a game pixel needs tap/drag/long-press gestures. */
+static int (*MobileTouchNeedsGesture)(int x, int y) = 0;
 #endif
 
 LRESULT FAR PASCAL _export Windows_Procedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -318,14 +320,6 @@ static void mac_queue_key_pulse(int vk)
 	mac_queue_message((HWND)(intptr_t)1, WM_KEYDOWN, (WPARAM)vk, 0);
 	MacKeyState[vk & 0xFF] = 0;
 	mac_queue_message((HWND)(intptr_t)1, WM_KEYUP, (WPARAM)vk, 0);
-}
-
-static void mac_queue_unmodified_key_pulse(int vk)
-{
-	MacKeyState[vk & 0xFF] = 1;
-	mac_queue_message((HWND)(intptr_t)1, WM_KEYDOWN, (WPARAM)vk, MOBILE_KEY_UNMODIFIED_LPARAM);
-	MacKeyState[vk & 0xFF] = 0;
-	mac_queue_message((HWND)(intptr_t)1, WM_KEYUP, (WPARAM)vk, MOBILE_KEY_UNMODIFIED_LPARAM);
 }
 
 static int mac_pop_message(MSG *msg, bool remove)
@@ -576,25 +570,25 @@ static void mobile_window_point(float normalized_x, float normalized_y, float *x
 	*y = normalized_y * (float)window_h;
 }
 
-static void mobile_emit_pan_key(void *, int vk)
+/*
+ * The fingers of a two-finger drag moved by dx, dy game pixels: the map follows
+ * them. tick is when SDL received the movement, which times a flick better than
+ * when the game gets round to reading it.
+ */
+static void mobile_add_pan(float dx, float dy, unsigned long tick)
 {
-	mac_queue_unmodified_key_pulse(vk);
+	MobilePan_Drag(&MobilePan, dx, dy, tick);
 }
 
-/* Size, in game pixels, of the part of the frame on screen. */
-static void mobile_logical_size(int *width, int *height)
+/* A finger movement in SDL's normalized window units, in game pixels. */
+static void mobile_finger_delta_to_logical(float normalized_dx, float normalized_dy, float *dx, float *dy)
 {
 	MacLayout layout = mac_current_layout();
-	*width = layout.source.w;
-	*height = layout.source.h;
-}
-
-static void mobile_emit_pan(float dx, float dy)
-{
-	int logical_w = 0;
-	int logical_h = 0;
-	mobile_logical_size(&logical_w, &logical_h);
-	MobilePan_EmitFingerDelta(&MobilePan, dx, dy, logical_w, logical_h, mobile_emit_pan_key, 0);
+	float window_dx = 0.0f;
+	float window_dy = 0.0f;
+	mobile_window_point(normalized_dx, normalized_dy, &window_dx, &window_dy);
+	*dx = layout.window.w > 0 ? window_dx * (float)layout.source.w / (float)layout.window.w : 0.0f;
+	*dy = layout.window.h > 0 ? window_dy * (float)layout.source.h / (float)layout.window.h : 0.0f;
 }
 
 /*
@@ -603,7 +597,7 @@ static void mobile_emit_pan(float dx, float dy)
  * view can't absorb (always, when unzoomed) scrolls the map as before.
  * Positions are in window pixels.
  */
-static void mobile_handle_pinch(float scale, float mid_x, float mid_y, float mid_dx, float mid_dy)
+static void mobile_handle_pinch(float scale, float mid_x, float mid_y, float mid_dx, float mid_dy, unsigned long tick)
 {
 	int window_w = MacWidth;
 	int window_h = MacHeight;
@@ -629,8 +623,8 @@ static void mobile_handle_pinch(float scale, float mid_x, float mid_y, float mid
 	float rest_y = 0.0f;
 	MobileZoom_Pan(&MobileZoom, mid_dx * logical_per_px_x, mid_dy * logical_per_px_y, logical_w, logical_h, &rest_x, &rest_y);
 
-	/* Each finger used to scroll the map on its own, so the pair scrolled twice as far as the midpoint moves. */
-	mobile_emit_pan(2.0f * rest_x / logical_per_px_x / (float)window_w, 2.0f * rest_y / logical_per_px_y / (float)window_h);
+	/* The map moves exactly as far as the fingers' midpoint. */
+	mobile_add_pan(rest_x, rest_y, tick);
 }
 
 static void mobile_queue_touch_output(MobileTouchGestureOutput const *out)
@@ -664,7 +658,13 @@ static void mobile_maybe_send_long_press(void)
 {
 	MobileTouchGestureOutput out;
 	MobileTouchGesture_Update(&MobileTouch, mac_now_ms(), &out);
-	mobile_queue_touch_output(&out);
+	if (out.count > 0) {
+#if defined(RA_IOS)
+		/* A tap of the phone's haptics says the long press became a right click. */
+		RedAlertIOS_LongPressFeedback();
+#endif
+		mobile_queue_touch_output(&out);
+	}
 }
 #endif
 
@@ -723,7 +723,12 @@ bool MacSDL_SetMode(int width, int height)
 #if defined(RA_IOS)
 		/* Phones with full-screen missions allow only the side that keeps the Dynamic Island over the map. */
 		SDL_SetHint(SDL_HINT_ORIENTATIONS, RedAlertIOS_OrientationHint());
-		SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "1");
+		/*
+		 * "2" makes iOS hand touches near the screen edges to the game at once
+		 * instead of first checking them for system swipes; leaving the game
+		 * then takes two swipes up.
+		 */
+		SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");
 #endif
 #if defined(RA_MOBILE_TOUCH)
 		SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
@@ -938,6 +943,7 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 	MacMM_PumpTimers();
 #if defined(RA_MOBILE_TOUCH)
 	mobile_maybe_send_long_press();
+	MobilePan_Step(&MobilePan, mac_now_ms());
 #endif
 	SDL_Event event;
 	bool saw_sdl_event = false;
@@ -986,10 +992,19 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 				float window_y = 0.0f;
 				mobile_window_point(event.tfinger.x, event.tfinger.y, &window_x, &window_y);
 				MobilePinch_Down(&MobilePinch, (long long)event.tfinger.fingerId, window_x, window_y, mac_now_ms(), MobileZoom.scale);
+				/* Any new touch stops a glide and starts measuring a new drag. */
+				MobilePan_Reset(&MobilePan);
+				/*
+				 * Buttons outside the battlefield and the build icons press at once,
+				 * like a mouse; there a touch needs no tap, drag or long-press decision.
+				 */
+				bool needs_gesture = InMovie || MobileTouch.primary_active || !MobileTouchNeedsGesture ||
+					MobileTouchNeedsGesture(x, y) != 0;
 				MobileTouchGestureOutput out;
-				MobileTouchGesture_Begin(&MobileTouch, (long long)event.tfinger.fingerId, x, y, mac_now_ms(), &out);
-				if (MobileTouch.secondary_active && MobileTouch.secondary_finger == (long long)event.tfinger.fingerId) {
-					MobilePan_Reset(&MobilePan);
+				if (needs_gesture) {
+					MobileTouchGesture_Begin(&MobileTouch, (long long)event.tfinger.fingerId, x, y, mac_now_ms(), &out);
+				} else {
+					MobileTouchGesture_BeginPress(&MobileTouch, (long long)event.tfinger.fingerId, x, y, mac_now_ms(), &out);
 				}
 				mobile_queue_touch_output(&out);
 				break;
@@ -1011,9 +1026,13 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 					&scale, &mid_x, &mid_y, &mid_dx, &mid_dy) != 0;
 				if (MobileTouchGesture_IsPanFinger(&MobileTouch, (long long)event.tfinger.fingerId)) {
 					if (pinch_moved) {
-						mobile_handle_pinch(scale, mid_x, mid_y, mid_dx, mid_dy);
+						mobile_handle_pinch(scale, mid_x, mid_y, mid_dx, mid_dy, event.tfinger.timestamp);
 					} else {
-						mobile_emit_pan(event.tfinger.dx, event.tfinger.dy);
+						/* One finger of the pair moves the midpoint half as far. */
+						float finger_dx = 0.0f;
+						float finger_dy = 0.0f;
+						mobile_finger_delta_to_logical(event.tfinger.dx, event.tfinger.dy, &finger_dx, &finger_dy);
+						mobile_add_pan(0.5f * finger_dx, 0.5f * finger_dy, event.tfinger.timestamp);
 					}
 					break;
 				}
@@ -1026,13 +1045,28 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 			case SDL_FINGERUP: {
 				int x = 0;
 				int y = 0;
+				if (MobileTouchGesture_IsPanFinger(&MobileTouch, (long long)event.tfinger.fingerId)) {
+					/* A finger can lift somewhere it was never reported moving to. */
+					float window_x = 0.0f;
+					float window_y = 0.0f;
+					float scale = MobileZoom.scale;
+					float mid_x = 0.0f;
+					float mid_y = 0.0f;
+					float mid_dx = 0.0f;
+					float mid_dy = 0.0f;
+					mobile_window_point(event.tfinger.x, event.tfinger.y, &window_x, &window_y);
+					if (MobilePinch_Move(&MobilePinch, (long long)event.tfinger.fingerId, window_x, window_y,
+							&scale, &mid_x, &mid_y, &mid_dx, &mid_dy)) {
+						mobile_handle_pinch(scale, mid_x, mid_y, mid_dx, mid_dy, event.tfinger.timestamp);
+					}
+				}
 				if (MobilePinch_BothActive(&MobilePinch)) {
 					unsigned long now = mac_now_ms();
 					int tap_fingers = MobilePinch_EndTapFingers(&MobilePinch, now);
 					if (MobilePinchZoomEnabled && MobilePinch_RecordTap(&MobilePinch, now, tap_fingers)) {
 						/* A two-finger double tap shows the whole frame again. */
 						MobileZoom_Init(&MobileZoom);
-					} else if (tap_fingers == 2 && MobileTouch.primary_active) {
+					} else if (tap_fingers == 2 && MobileTouch.secondary_active) {
 						/* A quick two-finger tap is a right click, which deselects units. */
 						MobileTouchGestureOutput out;
 						MobileTouchGesture_ClearOutput(&out);
@@ -1051,6 +1085,14 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 					mac_queue_key_pulse(VK_ESCAPE);
 					break;
 				}
+				if (MobileTouchGesture_IsPanFinger(&MobileTouch, (long long)event.tfinger.fingerId)) {
+					/* The two-finger drag ends: glide on if the fingers were flicked. */
+					MobilePan_Release(&MobilePan, event.tfinger.timestamp);
+					if (mac_layout_debug()) {
+						SDL_Log("RA_PAN: release samples=%d glide=%d velocity=(%.2f,%.2f) px/ms",
+							MobilePan.sample_count, MobilePan.gliding, MobilePan.velocity_x, MobilePan.velocity_y);
+					}
+				}
 				MobileTouchGestureOutput out;
 				MobileTouchGesture_End(&MobileTouch, (long long)event.tfinger.fingerId, x, y, &out);
 				mobile_queue_touch_output(&out);
@@ -1059,10 +1101,7 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 
 			case SDL_MULTIGESTURE:
 				if (MobileTouch.secondary_active) {
-					int logical_w = 0;
-					int logical_h = 0;
-					mobile_logical_size(&logical_w, &logical_h);
-					MobilePan_IgnoreMultiGestureCenter(&MobilePan, event.mgesture.x, event.mgesture.y, logical_w, logical_h, mobile_emit_pan_key, 0);
+					MobilePan_IgnoreMultiGestureCenter(&MobilePan, event.mgesture.x, event.mgesture.y);
 				}
 				break;
 #endif
@@ -1118,6 +1157,26 @@ bool MacSDL_TouchCursorHidden(void)
 	return MobileTouchCursorHidden;
 #else
 	return false;
+#endif
+}
+
+int MacSDL_TakeMobilePan(int *dx, int *dy)
+{
+#if defined(RA_MOBILE_TOUCH)
+	return MobilePan_Take(&MobilePan, mac_now_ms(), dx, dy);
+#else
+	*dx = 0;
+	*dy = 0;
+	return 0;
+#endif
+}
+
+void MacSDL_SetTouchGestureTest(int (*needs_gesture)(int x, int y))
+{
+#if defined(RA_MOBILE_TOUCH)
+	MobileTouchNeedsGesture = needs_gesture;
+#else
+	(void)needs_gesture;
 #endif
 }
 

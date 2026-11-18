@@ -148,9 +148,46 @@ DisplayClass::DisplayClass(void) :
  *   05/31/1994 JLB : Handles layer system now.                                                *
  *   06/02/1994 JLB : Takes care of misc display tables and data allocation.                   *
  *=============================================================================================*/
+#if defined(RA_MOBILE_TOUCH)
+/*
+ * Whether a touch at x,y (game pixels) needs the tap, drag and long-press
+ * gestures: on the battlefield, and on the build icons, where a long press is a
+ * right click that holds or cancels production. Everywhere else (menus, dialogs,
+ * the radar, the sidebar's other buttons) a touch presses at once, like a mouse.
+ */
+static bool Mobile_Point_In(int x, int y, int left, int top, int width, int height)
+{
+	return x >= left && x < left + width && y >= top && y < top + height;
+}
+
+static int Mobile_Touch_Needs_Gesture(int x, int y)
+{
+	if (!GameActive || SpecialDialog != SDLG_NONE) {
+		return 0;
+	}
+	if (Mobile_Point_In(x, y, Map.TacPixelX, Map.TacPixelY, Lepton_To_Pixel(Map.TacLeptonWidth), Lepton_To_Pixel(Map.TacLeptonHeight))) {
+		return 1;
+	}
+	if (Map.IsSidebarActive) {
+		for (int column = 0; column < SidebarClass::COLUMNS; column++) {
+			for (int row = 0; row < SidebarClass::StripClass::MAX_VISIBLE; row++) {
+				GadgetClass const & icon = SidebarClass::StripClass::SelectButton[column][row];
+				if (Mobile_Point_In(x, y, icon.X, icon.Y, icon.Width, icon.Height)) {
+					return 1;
+				}
+			}
+		}
+	}
+	return 0;
+}
+#endif
+
 void DisplayClass::One_Time(void)
 {
 	MapClass::One_Time();
+#if defined(RA_MOBILE_TOUCH)
+	MacSDL_SetTouchGestureTest(Mobile_Touch_Needs_Gesture);
+#endif
 
 	/*
 	** Init the CellRedraw bit array.  Do not do this in the constructor, since the

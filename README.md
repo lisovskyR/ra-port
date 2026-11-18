@@ -405,9 +405,13 @@ On Android and iOS:
 | --- | --- |
 | Tap | Left click |
 | Drag | Left-button drag, e.g. a selection box |
-| Long press or quick two-finger tap | Right click, e.g. deselect units |
-| Two-finger drag | Scroll the map |
+| Long press (0.45 s) or quick two-finger tap | Right click, e.g. deselect units; on iOS a long press gives a haptic tap |
+| Two-finger drag | Scroll the map; it follows the fingers and glides on after a flick |
 | Tap during a movie | Skip the movie |
+
+On the battlefield and the build icons, a touch is a click when the finger lifts, so taps, drags and long presses can be told apart; a finger may wander about 10 game pixels and still tap. Everywhere else (menus, dialogs, the radar, the tab bar and the other sidebar buttons) a touch presses the button as soon as it lands, like a mouse.
+
+On iOS, touches near the screen edges go to the game first, so leaving the game takes two swipes up.
 
 Pinch zoom is turned off. To bring it back, set `MobilePinchZoomEnabled` to `true` in `PORT/MAC/src/mac_sdl_runtime.cpp`. Pinching then magnifies the screen up to 3x, two fingers move the magnified view, and a quick two-finger double tap shows the whole screen again.
 

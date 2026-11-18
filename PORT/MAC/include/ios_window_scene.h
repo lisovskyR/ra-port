@@ -36,6 +36,9 @@ void RedAlertIOS_UseFullScreenMissions(void);
 /* SDL_HINT_ORIENTATIONS value matching the allowed landscape sides. */
 char const *RedAlertIOS_OrientationHint(void);
 
+/* A light haptic tap confirming that a long press became a right click. Main thread. */
+void RedAlertIOS_LongPressFeedback(void);
+
 #ifdef __cplusplus
 }
 #endif

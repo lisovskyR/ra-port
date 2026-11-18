@@ -85,7 +85,9 @@ static void test_long_press_is_right_click(void)
 
 	MobileTouchGesture_Init(&touch);
 	MobileTouchGesture_Begin(&touch, 7, 30, 40, 3000, &out);
-	MobileTouchGesture_Update(&touch, 3650, &out);
+	MobileTouchGesture_Update(&touch, 3000 + MobileTouchGesture_LongPressMs - 1, &out);
+	assert(out.count == 0);
+	MobileTouchGesture_Update(&touch, 3000 + MobileTouchGesture_LongPressMs, &out);
 	assert(out.count == 2);
 	assert(out.events[0].type == MOBILE_TOUCH_RIGHT_DOWN);
 	assert(out.events[1].type == MOBILE_TOUCH_RIGHT_UP);
@@ -103,7 +105,7 @@ static void test_delayed_drag_after_long_press_starts_selection(void)
 
 	MobileTouchGesture_Init(&touch);
 	MobileTouchGesture_Begin(&touch, 11, 30, 40, 6000, &out);
-	MobileTouchGesture_Update(&touch, 6650, &out);
+	MobileTouchGesture_Update(&touch, 6000 + MobileTouchGesture_LongPressMs, &out);
 	assert(out.count == 2);
 	assert(out.events[0].type == MOBILE_TOUCH_RIGHT_DOWN);
 	assert(out.events[1].type == MOBILE_TOUCH_RIGHT_UP);
@@ -162,8 +164,95 @@ static void test_two_finger_pan_cancels_tap(void)
 	assert(out.count == 0);
 }
 
+static void test_wobbly_tap_within_slop_is_still_a_tap(void)
+{
+	MobileTouchGesture touch;
+	MobileTouchGestureOutput out;
+
+	MobileTouchGesture_Init(&touch);
+	MobileTouchGesture_Begin(&touch, 12, 100, 100, 7000, &out);
+	MobileTouchGesture_Move(&touch, 12, 100 + MobileTouchGesture_DragSlop, 100 - MobileTouchGesture_DragSlop, &out);
+	assert(out.count == 0);
+	MobileTouchGesture_End(&touch, 12, 100 + MobileTouchGesture_DragSlop, 100, &out);
+	assert(out.count == 2);
+	assert(out.events[0].type == MOBILE_TOUCH_LEFT_DOWN);
+	assert(out.events[1].type == MOBILE_TOUCH_LEFT_UP);
+}
+
+static void test_finger_left_after_two_finger_scroll_does_not_select(void)
+{
+	MobileTouchGesture touch;
+	MobileTouchGestureOutput out;
+
+	MobileTouchGesture_Init(&touch);
+	MobileTouchGesture_Begin(&touch, 13, 100, 100, 8000, &out);
+	MobileTouchGesture_Begin(&touch, 14, 160, 100, 8010, &out);
+	MobileTouchGesture_End(&touch, 14, 200, 100, &out);
+	assert(out.count == 0);
+	MobileTouchGesture_Move(&touch, 13, 140, 100, &out);
+	assert(out.count == 0);
+	MobileTouchGesture_End(&touch, 13, 140, 100, &out);
+	assert(out.count == 0);
+}
+
+static void test_press_goes_down_at_once_and_up_where_it_pressed(void)
+{
+	MobileTouchGesture touch;
+	MobileTouchGestureOutput out;
+
+	MobileTouchGesture_Init(&touch);
+	MobileTouchGesture_BeginPress(&touch, 15, 300, 50, 9000, &out);
+	assert(out.count == 1);
+	assert(out.events[0].type == MOBILE_TOUCH_LEFT_DOWN);
+	assert(out.events[0].x == 300);
+	assert(out.events[0].y == 50);
+	assert(out.events[0].update_cursor == 0);
+
+	/* A wobble inside the slop neither moves the cursor nor long presses. */
+	MobileTouchGesture_Move(&touch, 15, 304, 53, &out);
+	assert(out.count == 0);
+	MobileTouchGesture_Update(&touch, 9000 + MobileTouchGesture_LongPressMs * 4, &out);
+	assert(out.count == 0);
+
+	/* Other fingers are ignored while the button is held. */
+	MobileTouchGesture_Begin(&touch, 16, 100, 100, 9100, &out);
+	assert(out.count == 0);
+	assert(!MobileTouchGesture_IsPanFinger(&touch, 16));
+	MobileTouchGesture_End(&touch, 16, 100, 100, &out);
+	assert(out.count == 0);
+
+	MobileTouchGesture_End(&touch, 15, 304, 53, &out);
+	assert(out.count == 1);
+	assert(out.events[0].type == MOBILE_TOUCH_LEFT_UP);
+	assert(out.events[0].x == 300);
+	assert(out.events[0].y == 50);
+	assert(!touch.primary_active);
+}
+
+static void test_press_dragged_past_slop_drags(void)
+{
+	MobileTouchGesture touch;
+	MobileTouchGestureOutput out;
+
+	MobileTouchGesture_Init(&touch);
+	MobileTouchGesture_BeginPress(&touch, 17, 300, 50, 10000, &out);
+	MobileTouchGesture_Move(&touch, 17, 300, 80, &out);
+	assert(out.count == 1);
+	assert(out.events[0].type == MOBILE_TOUCH_MOUSE_MOVE);
+	assert(out.events[0].y == 80);
+	MobileTouchGesture_End(&touch, 17, 300, 90, &out);
+	assert(out.count == 2);
+	assert(out.events[0].type == MOBILE_TOUCH_MOUSE_MOVE);
+	assert(out.events[1].type == MOBILE_TOUCH_LEFT_UP);
+	assert(out.events[1].y == 90);
+}
+
 int main(void)
 {
+	test_wobbly_tap_within_slop_is_still_a_tap();
+	test_finger_left_after_two_finger_scroll_does_not_select();
+	test_press_goes_down_at_once_and_up_where_it_pressed();
+	test_press_dragged_past_slop_drags();
 	test_tap_clicks_on_release();
 	test_tap_end_detection_rejects_non_taps();
 	test_drag_holds_left_button_after_slop();

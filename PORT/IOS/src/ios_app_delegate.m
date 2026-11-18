@@ -176,6 +176,16 @@ int RedAlertIOS_AttachWindowToScene(SDL_Window *window)
 	return 1;
 }
 
+void RedAlertIOS_LongPressFeedback(void)
+{
+	static UIImpactFeedbackGenerator *generator = nil;
+	if (!generator) {
+		generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+	}
+	[generator impactOccurred];
+	[generator prepare];
+}
+
 @interface RedAlertSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @end
 

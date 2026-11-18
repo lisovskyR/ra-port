@@ -346,7 +346,7 @@ perl -0ne 'exit(/void MacSDL_Present8\([^\)]*\)\s*\{[\s\S]*if \(MacPresenting\)[
 perl -0ne 'exit(/Uint32 window_flags = SDL_WINDOW_SHOWN \| SDL_WINDOW_RESIZABLE;[\s\S]*#if defined\(RA_MOBILE_TOUCH\)[\s\S]*window_flags \|= SDL_WINDOW_BORDERLESS;[\s\S]*#endif/s ? 0 : 1)' "$ROOT_DIR/PORT/MAC/src/mac_sdl_runtime.cpp" \
   || fail "mobile SDL windows must be borderless so iOS hides system chrome"
 
-perl -0ne 'exit(/#if defined\(RA_IOS\)[\s\S]*SDL_SetHint\(SDL_HINT_ORIENTATIONS,\s*"LandscapeLeft LandscapeRight"\);[\s\S]*SDL_SetHint\(SDL_HINT_IOS_HIDE_HOME_INDICATOR,\s*"1"\);[\s\S]*#endif/s ? 0 : 1)' "$ROOT_DIR/PORT/MAC/src/mac_sdl_runtime.cpp" \
+perl -0ne 'exit(/#if defined\(RA_IOS\)[\s\S]*SDL_SetHint\(SDL_HINT_ORIENTATIONS,\s*"LandscapeLeft LandscapeRight"\);[\s\S]*SDL_SetHint\(SDL_HINT_IOS_HIDE_HOME_INDICATOR,\s*"2"\);[\s\S]*#endif/s ? 0 : 1)' "$ROOT_DIR/PORT/MAC/src/mac_sdl_runtime.cpp" \
   || fail "iOS SDL windows must restrict UIKit/SDL orientation masks to landscape"
 
 perl -0ne 'exit(/Uint32 window_flags = SDL_WINDOW_SHOWN \| SDL_WINDOW_RESIZABLE;[\s\S]*#if defined\(RA_IOS\)[\s\S]*window_flags &= ~SDL_WINDOW_RESIZABLE;[\s\S]*#endif/s ? 0 : 1)' "$ROOT_DIR/PORT/MAC/src/mac_sdl_runtime.cpp" \

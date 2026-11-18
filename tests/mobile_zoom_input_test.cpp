@@ -27,6 +27,17 @@ static int right_clicks()
 	return count;
 }
 
+static int count_messages(UINT type)
+{
+	MSG message;
+	int count = 0;
+	while (PeekMessage(&message, 0, 0, 0, PM_REMOVE))
+		if (message.message == type) ++count;
+	return count;
+}
+
+static int no_gestures(int, int) { return 0; }
+
 static void pair_tap()
 {
 	touch(SDL_FINGERDOWN, 1, .4f, .5f);
@@ -58,6 +69,34 @@ int main()
 	assert(right_clicks() == 2);
 	assert(MobileZoom.scale == 1.0f);
 	SDL_Delay(MobilePinch_DoubleTapMs + 1);
+
+	// Two fingers dragging left by 64 pixels move the view 64 pixels east, so
+	// the map follows them (a cell is 24 pixels and 256 leptons).
+	int dx = 0;
+	int dy = 0;
+	MacSDL_TakeMobilePan(&dx, &dy);
+	touch(SDL_FINGERDOWN, 1, .4f, .5f);
+	touch(SDL_FINGERDOWN, 2, .6f, .5f);
+	touch(SDL_FINGERMOTION, 1, .3f, .5f);
+	touch(SDL_FINGERMOTION, 2, .5f, .5f);
+	assert(MacSDL_TakeMobilePan(&dx, &dy));
+	assert(dx >= 681 && dx <= 683);
+	assert(dy == 0);
+	touch(SDL_FINGERUP, 1, .3f, .5f);
+	touch(SDL_FINGERUP, 2, .5f, .5f);
+	count_messages(WM_LBUTTONDOWN);
+
+	// Where the game needs no gestures, a touch presses the button at once.
+	MacSDL_SetTouchGestureTest(no_gestures);
+	touch(SDL_FINGERDOWN, 3, .9f, .2f);
+	assert(count_messages(WM_LBUTTONDOWN) == 1);
+	touch(SDL_FINGERUP, 3, .9f, .2f);
+	assert(count_messages(WM_LBUTTONUP) == 1);
+	MacSDL_SetTouchGestureTest(0);
+	touch(SDL_FINGERDOWN, 3, .9f, .2f);
+	assert(count_messages(WM_LBUTTONDOWN) == 0);
+	touch(SDL_FINGERUP, 3, .9f, .2f);
+	assert(count_messages(WM_LBUTTONDOWN) == 1);
 
 	MobilePinchZoomEnabled = true;
 	touch(SDL_FINGERDOWN, 1, .4f, .5f);

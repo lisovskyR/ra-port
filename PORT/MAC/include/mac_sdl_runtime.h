@@ -23,3 +23,13 @@ void MacSDL_PumpEvents(void);
 bool MacSDL_QuitRequested(void);
 bool MacSDL_TouchCursorHidden(void);
 int MacSDL_ConsumeMobilePointerDrag(int *x, int *y);
+/*
+ * Two-finger scrolling: view movement since the last call, in leptons (positive
+ * x east, positive y south). Returns nonzero if there is any.
+ */
+int MacSDL_TakeMobilePan(int *dx, int *dy);
+/*
+ * The game's test of whether a touch at a game pixel needs the tap, drag and
+ * long-press gestures. Elsewhere a touch presses the left button at once.
+ */
+void MacSDL_SetTouchGestureTest(int (*needs_gesture)(int x, int y));

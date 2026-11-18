@@ -9,6 +9,9 @@
  */
 
 #include	"function.h"
+#if defined(RA_MOBILE_TOUCH)
+#include	"mac_sdl_runtime.h"
+#endif
 
 #ifdef WIN32
 #define	SCROLL_DELAY	1
@@ -67,6 +70,34 @@ void ScrollClass::AI(KeyNumType &input, int x, int y)
 	static unsigned long last_scroll_tick = 0xffffffffUL;
 	int		rate;
 
+#if defined(RA_MOBILE_TOUCH)
+	/*
+	**	A two-finger drag (and the glide after a flick) moves the view exactly as
+	**	far as the fingers moved, to the lepton, so the map follows them.
+	*/
+	int pan_x = 0;
+	int pan_y = 0;
+	if (MacSDL_TakeMobilePan(&pan_x, &pan_y)) {
+		int xx = (int)Coord_X(DesiredTacticalCoord) - (int)Cell_To_Lepton(MapCellX) + pan_x;
+		int yy = (int)Coord_Y(DesiredTacticalCoord) - (int)Cell_To_Lepton(MapCellY) + pan_y;
+		if (xx < 0) xx = 0;
+		if (yy < 0) yy = 0;
+		COORDINATE coord = XY_Coord(xx + Cell_To_Lepton(MapCellX), yy + Cell_To_Lepton(MapCellY));
+		if (coord != DesiredTacticalCoord) {
+			Set_Tactical_Position(coord);
+
+			/*
+			**	Scrolling requires all top layer units to be redrawn, as in Scroll_Map.
+			*/
+			for (int index = 0; index < Layer[LAYER_TOP].Count(); index++) {
+				Layer[LAYER_TOP][index]->Mark(MARK_CHANGE);
+			}
+			for (int index = 0; index < Layer[LAYER_AIR].Count(); index++) {
+				Layer[LAYER_AIR][index]->Mark(MARK_CHANGE);
+			}
+		}
+	}
+#endif
 
 	/*
 	**	If rubber band mode is in progress, then don't allow scrolling of the tactical map.
