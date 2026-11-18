@@ -4,10 +4,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <set>
+#include <stdio.h>
 #include <string>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
+#include <vector>
 
 #include <windows.h>
 
@@ -154,18 +158,33 @@ static bool copy_file(char const *source, char const *dest)
 	return ok;
 }
 
-static bool copy_directory_recursive(char const *source, char const *dest)
+/*
+**	The game runs from a writable copy of the bundled data, so settings and saves
+**	can be written next to it. Each launch brings that copy up to date with the
+**	bundle: new files are added (for example a language pack dropped into
+**	assets/redalert before a rebuild), changed files are replaced, and files a
+**	previous build copied but the bundle no longer has are removed. The player's
+**	REDALERT.INI settings are never overwritten or removed.
+*/
+static char const *bundled_manifest_name(void)
 {
-	DIR *dir = opendir(source);
-	if (!dir) {
-		return false;
-	}
-	if (!make_directories(dest)) {
-		closedir(dir);
-		return false;
-	}
+	return "BUNDLED.LST";
+}
 
-	bool ok = true;
+static bool is_player_settings(std::string const &relative)
+{
+	std::string::size_type slash = relative.find_last_of('/');
+	std::string name = slash == std::string::npos ? relative : relative.substr(slash + 1);
+	return strcasecmp(name.c_str(), "REDALERT.INI") == 0;
+}
+
+static void list_files_recursive(std::string const &root, std::string const &relative, std::vector<std::string> &files)
+{
+	std::string path = relative.empty() ? root : join_path(root, relative.c_str());
+	DIR *dir = opendir(path.c_str());
+	if (!dir) {
+		return;
+	}
 	for (;;) {
 		struct dirent *entry = readdir(dir);
 		if (!entry) {
@@ -174,29 +193,129 @@ static bool copy_directory_recursive(char const *source, char const *dest)
 		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
 			continue;
 		}
-
-		std::string source_path = join_path(source, entry->d_name);
-		std::string dest_path = join_path(dest, entry->d_name);
+		std::string child = relative.empty() ? std::string(entry->d_name) : join_path(relative, entry->d_name);
 		struct stat info;
-		if (lstat(source_path.c_str(), &info) != 0) {
-			ok = false;
-			break;
+		if (lstat(join_path(root, child.c_str()).c_str(), &info) != 0) {
+			continue;
 		}
 		if (S_ISDIR(info.st_mode)) {
-			if (!copy_directory_recursive(source_path.c_str(), dest_path.c_str())) {
-				ok = false;
-				break;
-			}
+			list_files_recursive(root, child, files);
 		} else if (S_ISREG(info.st_mode)) {
-			if (!copy_file(source_path.c_str(), dest_path.c_str())) {
-				ok = false;
-				break;
-			}
+			files.push_back(child);
+		}
+	}
+	closedir(dir);
+}
+
+static bool needs_copy(struct stat const &source, char const *dest)
+{
+	struct stat existing;
+	if (stat(dest, &existing) != 0) {
+		return true;
+	}
+	return existing.st_size != source.st_size || existing.st_mtime < source.st_mtime;
+}
+
+static void match_modification_time(char const *dest, struct stat const &source)
+{
+	struct timeval times[2];
+	times[0].tv_sec = source.st_mtime;
+	times[0].tv_usec = 0;
+	times[1] = times[0];
+	utimes(dest, times);
+}
+
+static std::set<std::string> read_manifest(std::string const &path)
+{
+	std::set<std::string> names;
+	FILE *file = fopen(path.c_str(), "r");
+	if (!file) {
+		return names;
+	}
+	char line[PATH_MAX];
+	while (fgets(line, sizeof(line), file)) {
+		size_t length = strlen(line);
+		while (length > 0 && (line[length - 1] == '\n' || line[length - 1] == '\r')) {
+			line[--length] = '\0';
+		}
+		if (length > 0 && strstr(line, "..") == NULL && line[0] != '/') {
+			names.insert(line);
+		}
+	}
+	fclose(file);
+	return names;
+}
+
+static bool write_manifest(std::string const &path, std::vector<std::string> const &files)
+{
+	std::string temporary = path + ".tmp";
+	FILE *file = fopen(temporary.c_str(), "w");
+	if (!file) {
+		return false;
+	}
+	bool ok = true;
+	for (size_t index = 0; index < files.size(); ++index) {
+		if (fprintf(file, "%s\n", files[index].c_str()) < 0) {
+			ok = false;
+		}
+	}
+	if (fclose(file) != 0) {
+		ok = false;
+	}
+	return ok && rename(temporary.c_str(), path.c_str()) == 0;
+}
+
+static bool sync_bundled_assets_to(std::string const &writable_root)
+{
+	char *base_path = SDL_GetBasePath();
+	if (!base_path) {
+		return false;
+	}
+	std::string source = join_path(base_path, "assets/redalert");
+	SDL_free(base_path);
+	if (!directory_exists(source.c_str())) {
+		return false;
+	}
+
+	std::string dest = join_path(writable_root, "assets/redalert");
+	if (!make_directories(dest)) {
+		return false;
+	}
+
+	std::vector<std::string> files;
+	list_files_recursive(source, std::string(), files);
+
+	bool ok = true;
+	std::set<std::string> bundled;
+	for (size_t index = 0; index < files.size(); ++index) {
+		std::string const &relative = files[index];
+		bundled.insert(relative);
+		std::string from = join_path(source, relative.c_str());
+		std::string to = join_path(dest, relative.c_str());
+		if (is_player_settings(relative) && path_exists(to.c_str())) {
+			continue;
+		}
+		struct stat info;
+		if (stat(from.c_str(), &info) != 0 || !needs_copy(info, to.c_str())) {
+			continue;
+		}
+		if (copy_file(from.c_str(), to.c_str())) {
+			match_modification_time(to.c_str(), info);
+		} else {
+			ok = false;
 		}
 	}
 
-	closedir(dir);
-	return ok;
+	std::string manifest = join_path(dest, bundled_manifest_name());
+	std::set<std::string> previous = read_manifest(manifest);
+	for (std::set<std::string>::const_iterator name = previous.begin(); name != previous.end(); ++name) {
+		if (bundled.count(*name) == 0 && !is_player_settings(*name)) {
+			unlink(join_path(dest, name->c_str()).c_str());
+		}
+	}
+	write_manifest(manifest, files);
+
+	return ok && path_exists(join_path(writable_root, config_path()).c_str());
 }
 
 static bool use_resource_root(std::string const &root)
@@ -207,26 +326,6 @@ static bool use_resource_root(std::string const &root)
 	return path_exists(config_path());
 }
 
-static bool copy_bundled_assets_to(std::string const &writable_root)
-{
-	char *base_path = SDL_GetBasePath();
-	if (!base_path) {
-		return false;
-	}
-
-	std::string source = join_path(base_path, "assets/redalert");
-	SDL_free(base_path);
-	if (!directory_exists(source.c_str())) {
-		return false;
-	}
-
-	std::string dest = join_path(writable_root, "assets/redalert");
-	if (!copy_directory_recursive(source.c_str(), dest.c_str())) {
-		return false;
-	}
-	return path_exists(join_path(writable_root, config_path()).c_str());
-}
-
 static void select_resource_root(void)
 {
 	char *pref_path = SDL_GetPrefPath("ra-port", "RedAlert");
@@ -234,9 +333,7 @@ static void select_resource_root(void)
 		std::string writable_root = join_path(pref_path, "redalert-root");
 		SDL_free(pref_path);
 		make_directories(writable_root);
-		if (!path_exists(join_path(writable_root, config_path()).c_str())) {
-			copy_bundled_assets_to(writable_root);
-		}
+		sync_bundled_assets_to(writable_root);
 		if (use_resource_root(writable_root)) {
 			return;
 		}

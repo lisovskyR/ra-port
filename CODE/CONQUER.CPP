@@ -171,6 +171,7 @@ void Main_Game(int argc, char * argv[])
 	**		until they indicate that the user wants to exit the scenario.
 	*/
 	while (Select_Game(fade)) {
+		Set_Mission_View(true);
 		fade = false;
 		ScenarioInit = 0;		// Kludge.
 
@@ -2087,6 +2088,8 @@ Mono_Set_Cursor(0,0);
 
 	if (!GameActive) return(!GameActive);
 
+	Set_Mission_View(true);
+
 #ifdef WIN32
 	/*
 	** Call the focus loss handler
@@ -2263,6 +2266,7 @@ Mono_Set_Cursor(0,0);
 		PlayerWins = false;
 		PlayerRestarts = false;
 		Map.Help_Text(TXT_NONE);
+		Set_Mission_View(false);
 		Do_Win();
 		return(!GameActive);
 	}
@@ -2282,6 +2286,7 @@ Mono_Set_Cursor(0,0);
 		PlayerLoses = false;
 		PlayerRestarts = false;
 		Map.Help_Text(TXT_NONE);
+		Set_Mission_View(false);
 		Do_Lose();
 		return(!GameActive);
 	}
@@ -2293,6 +2298,7 @@ Mono_Set_Cursor(0,0);
 		PlayerLoses = false;
 		PlayerRestarts = false;
 		Map.Help_Text(TXT_NONE);
+		Set_Mission_View(false);
 		Do_Restart();
 		return(!GameActive);
 	}
@@ -2308,6 +2314,7 @@ Mono_Set_Cursor(0,0);
 		}
 		WWMouse->Erase_Mouse(&HidPage, TRUE);
 		Map.Help_Text(TXT_NONE);
+		Set_Mission_View(false);
 		Do_Draw();
 		return(!GameActive);
 	}
@@ -2816,6 +2823,7 @@ void Play_Movie(char const * name, ThemeType theme, bool clrscrn)
 		/*
 		**	Reset the anim control structure.
 		*/
+		bool mission_view = Set_Mission_View(false);
 		Anim_Init();
 
 		/*
@@ -2928,6 +2936,9 @@ void Play_Movie(char const * name, ThemeType theme, bool clrscrn)
 			BlackPalette.Set();
 			BlackPalette.Adjust(0xFF);
 			BlackPalette.Set();
+		}
+		if (mission_view) {
+			Set_Mission_View(true);
 		}
 		Show_Mouse();
 	}

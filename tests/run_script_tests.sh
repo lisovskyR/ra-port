@@ -124,7 +124,83 @@ assert_file_contains PORT/ANDROID/src/android_main.cpp "SDL_main"
 assert_file_contains PORT/IOS/src/ios_main.cpp "SDL_main"
 assert_file_contains PORT/IOS/src/ios_main.cpp "SDL_GetPrefPath"
 assert_file_contains PORT/IOS/src/ios_main.cpp "SDL_GetBasePath"
-assert_file_contains PORT/IOS/src/ios_main.cpp "copy_directory_recursive"
+assert_file_contains ios/CMakeLists.txt "RA95_IOS_APP_ICON"
+assert_file_contains ios/CMakeLists.txt '-E rm -rf "$<TARGET_BUNDLE_DIR:redalert_ios>/assets/redalert"'
+assert_file_contains ios/CMakeLists.txt "assets/AppIcon-1024.png"
+assert_file_contains ios/CMakeLists.txt 'RESOURCE "${RA95_IOS_ASSET_CATALOG}"'
+assert_file_contains scripts/build_ios_debug.sh "RA_IOS_APP_ICON"
+assert_file_contains ios/icon/make_disc_art_icon.swift "SETUP.BMP"
+assert_file_contains ios/icon/make_exe_icon.py "RT_GROUP_ICON = 14"
+assert_file_contains PORT/IOS/src/ios_main.cpp "sync_bundled_assets_to"
+assert_file_contains PORT/IOS/src/ios_main.cpp "is_player_settings"
+assert_file_contains PORT/IOS/src/ios_main.cpp "BUNDLED.LST"
+assert_file_contains CODE/INIT.CPP "WOLAPI.MIX is opened even without Westwood Online support"
+assert_file_contains CODE/INIT.CPP "Register_Expansion_Mixfiles(\"SC*.MIX\", true);"
+assert_file_contains CODE/INIT.CPP "mix->Search_First();"
+assert_file_contains CODE/INIT.CPP "EXPANSION_CACHE_LIMIT"
+assert_file_contains CODE/MIXFILE.H "void Search_First(void) {List.Add_Head(this);};"
+assert_file_contains CODE/CDFILE.CPP "char const * CDFileClass::Data_Folder(int index)"
+assert_file_contains scripts/make_voice_mix.py "SPEECH_BUFFER_SIZE = 50000"
+assert_file_contains scripts/make_voice_mix.py "SC--EVAR.MIX"
+assert_file_contains scripts/make_movie_mix.py "SC--VIDR.MIX"
+python3 -I - "$ROOT_DIR/scripts/make_movie_mix.py" <<'PYEOF' || fail "make_movie_mix.py must replace only movie audio, keeping chunk sizes"
+import importlib.util, math, struct, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("movie", sys.argv[1])
+movie_mix = importlib.util.module_from_spec(spec); spec.loader.exec_module(movie_mix)
+voice = movie_mix.voice
+def chunk(kind, payload):
+    return kind + struct.pack(">I", len(payload)) + payload + (b"\0" if len(payload) & 1 else b"")
+def vqa(kind, sizes):
+    header = struct.pack("<HHHHHBBBBHHHHHHBB", 2, 0, len(sizes), 320, 200, 4, 2, 15, 8, 255, 2000, 0, 0, 0, 22050, 1, 16).ljust(42, b"\0")
+    body = b"WVQA" + chunk(b"VQHD", header) + chunk(b"FINF", b"\0" * 4 * len(sizes))
+    for size in sizes:
+        body += chunk(kind, b"\x55" * size) + chunk(b"VQFR", b"video")
+    return b"FORM" + struct.pack(">I", len(body)) + body
+source = [int(9000 * math.sin(i * 0.07)) for i in range(4000)]
+# IMA (SND2): same file size, video untouched, and the audio decodes back continuously.
+original = vqa(b"SND2", [1000, 500, 500])
+movie = movie_mix.Movie(original)
+assert movie.usable() and movie.samples == 4000
+movie.replace_audio(source)
+assert len(movie.data) == len(original) and movie.data.count(b"video") == 3
+state, decoded = [0, 0], []
+for _, offset, size in movie.audio:
+    for byte in movie.data[offset:offset + size]:
+        for nibble in (byte & 15, byte >> 4):
+            decoded.append(voice.ima_decode_step(state, nibble))
+noise = sum((a - b) ** 2 for a, b in zip(source, decoded)) or 1
+assert 10 * math.log10(sum(a * a for a in source) / noise) > 30
+# Plain PCM (SND0): samples are written as 16-bit little-endian.
+original = vqa(b"SND0", [4000, 2000, 2000])
+movie = movie_mix.Movie(original)
+assert movie.usable() and movie.samples == 4000
+movie.replace_audio(source)
+assert len(movie.data) == len(original)
+_, offset, size = movie.audio[0]
+assert list(struct.unpack("<2000h", bytes(movie.data[offset:offset + size]))) == source[:2000]
+PYEOF
+python3 -I - "$ROOT_DIR/scripts/make_voice_mix.py" <<'PYEOF' || fail "make_voice_mix.py IMA round trip or mixfile hash is wrong"
+import importlib.util, math, struct, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("voice", sys.argv[1])
+voice = importlib.util.module_from_spec(spec); spec.loader.exec_module(voice)
+assert voice.ra_crc("CONQUER.ENG") & 0xFFFFFFFF == 0xA22515FC
+source = [int(12000 * math.sin(i * 0.05)) for i in range(5000)]
+aud = voice.make_aud(source, 22050)
+rate, size, uncomp, flags, comp = struct.unpack_from("<HiiBB", aud, 0)
+assert (rate, uncomp, flags, comp) == (22050, 10000, 2, 99) and size == len(aud) - 12
+state, out, pos = [0, 0], [], 12
+while pos < len(aud):
+    frame, decoded, magic = struct.unpack_from("<HHI", aud, pos); pos += 8
+    assert magic == 0xDEAF
+    for byte in aud[pos:pos + frame]:
+        for nibble in (byte & 15, byte >> 4):
+            if len(out) < uncomp // 2: out.append(voice.ima_decode_step(state, nibble))
+    pos += frame
+noise = sum((a - b) ** 2 for a, b in zip(source, out)) or 1
+assert len(out) == len(source) and 10 * math.log10(sum(a * a for a in source) / noise) > 30
+PYEOF
 assert_file_contains PORT/IOS/src/ios_main.cpp "redalert-root"
 assert_file_contains PORT/IOS/src/ios_app_delegate.m "RedAlertIOSDelegate"
 assert_file_contains PORT/IOS/src/ios_app_delegate.m "UIInterfaceOrientationMaskLandscape"
@@ -132,6 +208,32 @@ assert_file_contains PORT/IOS/src/ios_app_delegate.m "getAppDelegateClassName"
 assert_file_contains PORT/IOS/src/ios_app_delegate.m "class_replaceMethod"
 assert_file_contains PORT/IOS/src/ios_app_delegate.m "UIWindowSceneGeometryPreferencesIOS"
 assert_file_contains PORT/IOS/src/ios_app_delegate.m "requestGeometryUpdateWithPreferences"
+assert_file_contains PORT/IOS/src/ios_app_delegate.m "RedAlertSceneDelegate"
+assert_file_contains PORT/IOS/src/ios_app_delegate.m "RedAlertIOS_AttachWindowToScene"
+assert_file_contains ios/Info.plist.in "UIApplicationSceneManifest"
+assert_file_contains ios/Info.plist.in "RedAlertSceneDelegate"
+assert_file_contains ios/Info.plist.in "\$(PRODUCT_BUNDLE_IDENTIFIER)"
+assert_file_contains ios/CMakeLists.txt "ios_layout.m"
+assert_file_contains ios/CMakeLists.txt "RA95_IOS_BUNDLE_ID"
+assert_file_contains PORT/IOS/src/ios_layout.m "MobileSafeArea_Query"
+assert_file_contains PORT/MAC/src/mac_sdl_runtime.cpp "RedAlertIOS_AttachWindowToScene"
+assert_file_contains PORT/MAC/src/mac_sdl_runtime.cpp "RA_CalculateInsetAspectViewport"
+assert_file_contains PORT/MAC/src/mac_sdl_runtime.cpp "SDL_WINDOW_ALLOW_HIGHDPI"
+assert_file_contains PORT/MAC/src/mac_sdl_runtime.cpp "mac_refresh_layout"
+assert_help_contains scripts/build_ios_debug.sh "RA_IOS_BUNDLE_ID"
+assert_file_contains CODE/STARTUP.CPP "bool Set_Mission_View(bool mission)"
+assert_file_contains CODE/STARTUP.CPP "MacSDL_PreferredScreenHeight"
+assert_file_contains CODE/FUNCTION.H "bool Set_Mission_View(bool mission);"
+assert_file_contains CODE/CONQUER.CPP "Set_Mission_View(true);"
+assert_file_contains CODE/CONQUER.CPP "Set_Mission_View(false);"
+assert_file_contains CODE/INIT.CPP "Set_Mission_View(false);"
+assert_file_contains CODE/SCENARIO.CPP "bool mission_view = Set_Mission_View(false);"
+assert_file_contains CODE/SIDEBAR.CPP "LogicPage->Get_Height() > 400"
+assert_file_contains CODE/TAB.CPP "SeenBuff.Get_Height() > 400"
+assert_file_contains PORT/MAC/src/mac_sdl_runtime.cpp "MacSDL_SetViewRect"
+assert_file_contains PORT/MAC/src/mac_sdl_runtime.cpp "RA_CalculateFillViewport"
+assert_file_contains PORT/MAC/src/mac_sdl_runtime.cpp "RA_MissionPageHeight"
+assert_file_contains PORT/IOS/src/ios_app_delegate.m "UIInterfaceOrientationMaskLandscapeRight"
 assert_file_contains ios/CMakeLists.txt "redalert_ios"
 assert_file_contains ios/CMakeLists.txt "MACOSX_BUNDLE"
 assert_file_contains ios/CMakeLists.txt "ios_app_delegate.m"
@@ -332,6 +434,9 @@ grep -F 'char mac_cd_paths[] = "C:\\;D:\\";' "$ROOT_DIR/CODE/INIT.CPP" >/dev/nul
 grep -F 'char mac_cd_paths[] = "?:\\";' "$ROOT_DIR/CODE/INIT.CPP" >/dev/null \
   || fail "bootstrap mixfile search must use the current-CD placeholder"
 
+perl -0ne 'exit(/#ifdef WOLAPI_INTEGRATION\s*CCFileClass fileWolapiMix/s ? 0 : 1)' "$ROOT_DIR/CODE/INIT.CPP" \
+  && fail "WOLAPI.MIX language packs must load without Westwood Online support"
+
 perl -0ne 'exit(/int Com_Scenario_Dialog\(bool\)\s*\{\s*return 0;\s*\}/s ? 0 : 1)' "$ROOT_DIR/PORT/MAC/src/legacy_primitives.cpp" \
   && fail "Com_Scenario_Dialog must not remain an unconditional stub"
 
@@ -456,6 +561,10 @@ inc_winvq_ww=(-I"$tmpdir/casefold/winvq/include/wwlib32" -I"$ROOT_DIR/WINVQ/INCL
 "${cxx_cmd[@]}" "${inc_port[@]}" \
   "$ROOT_DIR/tests/aspect_viewport_test.cpp" -o "$tmpdir/aspect_viewport_test"
 "$tmpdir/aspect_viewport_test"
+
+"${cxx_cmd[@]}" "${inc_port[@]}" \
+  "$ROOT_DIR/tests/mobile_safe_area_test.cpp" -o "$tmpdir/mobile_safe_area_test"
+"$tmpdir/mobile_safe_area_test"
 
 "${cxx_cmd[@]}" "${inc_port[@]}" \
   "$ROOT_DIR/tests/mobile_touch_gesture_test.cpp" -o "$tmpdir/mobile_touch_gesture_test"

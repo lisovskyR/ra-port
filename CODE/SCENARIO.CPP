@@ -1249,7 +1249,17 @@ bool Restate_Mission(char const * name, int button1, int button2)
 		if (strlen(Scen.BriefingText)) {
 			strcpy(_ShapeBuffer, Scen.BriefingText);
 			BlackPalette.Set(FADE_PALETTE_MEDIUM, Call_Back);
-			if (BGMessageBox(_ShapeBuffer, button2, button1)) {
+
+			/*
+			**	The briefing screen is a 640x400 picture. When the mission uses a
+			**	taller page, show it in the menu view so no map is left below it.
+			*/
+			bool mission_view = Set_Mission_View(false);
+			bool resume = BGMessageBox(_ShapeBuffer, button2, button1) != 0;
+			if (mission_view) {
+				Set_Mission_View(true);
+			}
+			if (resume) {
 				return(true);
 			}
 			if (!brief) return(true);
@@ -1505,7 +1515,8 @@ int BGMessageBox(char const * msg, int btn1, int btn2)
 			if (bufprint[0] != 20) {
 				SeenPage.Print(bufprint, xprint, yprint, TBLACK, TBLACK);
 #ifdef WIN32
-				seen_buff_save.Print(bufprint, xprint, yprint, TBLACK, TBLACK);
+				/* The saved copy covers the whole page; SeenPage may be a view offset into it. */
+				seen_buff_save.Print(bufprint, xprint + SeenPage.Get_XPos(), yprint + SeenPage.Get_YPos(), TBLACK, TBLACK);
 #endif
 				xprint += Char_Pixel_Width(bufprint[0]);
 			}

@@ -387,6 +387,7 @@ CELL Coord_Cell(COORDINATE coord);
 // Denzil 5/18/98 - Mpeg movie playback
 #ifdef MPEGMOVIE
 bool InitDDraw(void);
+bool Set_Mission_View(bool mission);
 bool PlayMpegMovie(const char* name);
 #endif
 

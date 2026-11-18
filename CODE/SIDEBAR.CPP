@@ -702,6 +702,15 @@ void SidebarClass::Draw_It(bool complete)
 			CC_Draw_Shape(SidebarMiddleShape, shape, SIDE_X * RESFACTOR, (8+80)*RESFACTOR, WINDOW_MAIN, SHAPE_WIN_REL);
 			CC_Draw_Shape(SidebarBottomShape, shape, SIDE_X * RESFACTOR, (8+80+50)*RESFACTOR, WINDOW_MAIN, SHAPE_WIN_REL);
 
+			/*
+			**	Port: on a page taller than 640x400 the sidebar art ends above the
+			**	bottom of the screen. Clear the strip below it, which the map may
+			**	have drawn on while the sidebar was hidden.
+			*/
+			if (LogicPage->Get_Height() > 400) {
+				LogicPage->Fill_Rect(SIDE_X * RESFACTOR, 400, LogicPage->Get_Width() - 1, LogicPage->Get_Height() - 1, BLACK);
+			}
+
 			Repair.Draw_Me(true);
 			Upgrade.Draw_Me(true);
 			Zoom.Draw_Me(true);

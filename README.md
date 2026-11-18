@@ -114,6 +114,48 @@ Those directories are ignored by git. They should contain original disc-root sty
 
 The Android and iOS debug builds use the same ignored `assets/redalert` tree. Gradle copies those local files into generated Android debug assets, and the iOS CMake target copies them into the debug app bundle. They are not checked in and they are not used for release packaging.
 
+### Language packs
+
+The engine opens `WOLAPI.MIX` before every other mixfile when it is present, even though online play is not built in. Version 3.03 language packs ship their translated text, fonts, title screens, and mission briefings in that file, so it replaces the English versions.
+
+To play in a pack's language, copy its `WOLAPI.MIX` into both `assets/redalert/allies/` and `assets/redalert/soviet/`. The engine only searches the current disc's folder at startup. Remove the file from both folders to go back to English.
+
+The Russian 3.03 translation by dantt3, based on the 2005 Siberian Studio localization, works this way. It is the `RA1303Rus` patch on Playground.ru. Its `WOLAPI.MIX` translates the menus, in-game text, and mission briefings. Voices and movies stay in English. The patch's `ra1_303_rus.exe` patches the Windows game executable and is not needed.
+
+### Voice packs
+
+The engine also loads `SC*.MIX` files from either disc's data folder, and searches them before the stock mixfiles. So add-ons that ship replacement speech, unit voices, or movies in such files override the English versions. One copy in `assets/redalert/allies/` is enough. Small ones are loaded into memory at startup. Larger ones, such as movie packs, are read from disk as needed.
+
+Mechanics VoiceOver's Russian dub was released in December 2021, in the Old-Games.ru thread "Релиз русской озвучки Command and Conquer: Red Alert". It comes in two forms:
+
+- **For the original game:** `SC--EVAR.MIX` for EVA, `SC--UNTR.MIX` for unit voices, and `SC--VIDR.MIX` for the dubbed cutscenes. Copy them in as they are. Leave out its `EXPAND.MIX` and `EXPAND2.MIX`, which replace expansion files the base-game discs don't include. When this was written, its Yandex Disk download failed with a server error.
+- **For the Remastered Collection:** an installer with no password. Its voice files and its cutscenes' dubbed audio can be converted for this port. The cutscene video is Bink 2, which can't be converted, so the original videos are kept and only their audio is replaced.
+
+To convert the Remastered release, extract its installer with `innoextract`, then run the converter on the mod's audio folder:
+
+```sh
+python3 scripts/make_voice_mix.py "<extracted>/Data/Audio/EN-US" assets/redalert/allies
+```
+
+It writes `SC--EVAR.MIX` and `SC--UNTR.MIX` in the game's own 16-bit IMA ADPCM format. EVA lines are kept under the 50,000-byte limit of the game's speech buffers by lowering their sample rate when needed. It uses macOS's `afconvert` to resample.
+
+For the cutscenes, run the movie converter on the mod's movie folder and both discs' `MAIN.MIX`:
+
+```sh
+python3 scripts/make_movie_mix.py --track 2 "<extracted>/Data/ART/MOVIES/RA" assets/redalert/allies \
+    assets/redalert/allies/MAIN.MIX assets/redalert/soviet/MAIN.MIX
+```
+
+The Bink files carry several audio tracks, and `--track` picks the dub, counting from 0. In this dub's files the Russian is track 2. Add `--dry-run` to see the matches without writing anything. The script works like this:
+
+- It finds each cutscene's original movie by comparing soundtracks, because the names inside `MAIN.MIX` are encrypted.
+- It measures the timing offset from the music and effects the two versions share, so speech stays in sync.
+- It writes the dubbed audio in place of the original's, at the original's loudness.
+- Only audio bytes change, so the original video and frame timing are untouched.
+- Any cutscene it can't match with confidence is left in English.
+
+It writes `SC--VIDR.MIX` and needs `ffmpeg` and a C compiler.
+
 ## Build From Source
 
 Configure and build on macOS:
@@ -285,7 +327,58 @@ Build a signed device app for iPhone or iPad:
 RA_IOS_DEVELOPMENT_TEAM=TEAMID scripts/build_ios_debug.sh --device
 ```
 
-The debug iOS app intentionally includes your local ignored game data. On first launch it copies that bundled data into app-writable storage before starting the game, so saves and options can be written inside the iOS sandbox. Do not distribute that app bundle.
+Device builds use automatic signing and may register the device and create a development profile. Set `RA_IOS_BUNDLE_ID` to a bundle identifier your team can use if `com.raport.redalert` is not available to you. Install the result with:
+
+```sh
+xcrun devicectl device install app --device DEVICE_ID ios/build-device/Debug-iphoneos/redalert_ios.app
+```
+
+Devices on iOS 27 need Xcode 27. Select it with `DEVELOPER_DIR` when several Xcode versions are installed:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode-27.1.0.app/Contents/Developer RA_IOS_DEVELOPMENT_TEAM=TEAMID RA_IOS_BUNDLE_ID=com.example.redalert scripts/build_ios_debug.sh --device
+```
+
+Apps built with the iOS 27 SDK must use the UIScene lifecycle, so the app ships a scene delegate and attaches SDL's window to that scene. The minimum deployment target is iOS 15, the lowest that Xcode 27 accepts.
+
+The debug iOS app intentionally includes your local ignored game data. Do not distribute that app bundle. The game runs from a copy of that data in app-writable storage, so saves and options can be written inside the iOS sandbox. Each launch brings the copy up to date with the bundle:
+
+- Files added to `assets/redalert` before a rebuild, such as a language pack, are copied in.
+- Changed files are replaced, and files that an earlier build copied but the bundle no longer has are removed.
+- The player's `REDALERT.INI` settings are never overwritten.
+
+### App icon
+
+The repository ships an original icon design in `ios/Assets.xcassets`, drawn by `ios/icon/make_app_icon.swift`. It contains no game art.
+
+You can use the original 1996 artwork instead. Either script writes a 1024x1024 PNG:
+
+- `ios/icon/make_exe_icon.py` takes the Red Alert 95 program icon from the game's `RA95.EXE` and enlarges its 32x32 pixels with hard edges. It only parses the file and never runs it.
+- `ios/icon/make_disc_art_icon.swift` crops the Allied disc's installer screen, with the Command & Conquer Red Alert logo along the top.
+
+```sh
+python3 ios/icon/make_exe_icon.py assets/redalert/allies/INSTALL/RA95.EXE assets/AppIcon-1024.png
+```
+
+```sh
+swift ios/icon/make_disc_art_icon.swift /path/to/allied-disc/SETUP95/SETUP.BMP assets/AppIcon-1024.png
+```
+
+The build uses `assets/AppIcon-1024.png` whenever that file exists. `assets/` is ignored by git, so EA's artwork stays out of the repository. To use any other 1024x1024 PNG, set `RA_IOS_APP_ICON=/path/to/icon.png`. Delete the file, or leave the variable unset, to go back to the original design.
+
+### Screen layout and iPhone Duo
+
+The game is drawn for 640x400. On iOS it is scaled at the display's native pixel density. Wide iPhones show the 640x400 frame centered, with bars that already clear the Dynamic Island.
+
+On displays squarer than 640x400, such as both iPhone Duo displays and iPads, the game page grows in whole map-cell rows (448 lines on the Duo, 472 on 4:3 tablets):
+
+- Missions use the whole page and fill the screen edge to edge, so the tactical map shows extra rows instead of letterbox bars. The stretch needed to fill is under 2 percent on the Duo. The strip below the sidebar art is black, and blank metal tab plates fill the top bar between the Options tab and the credits counter.
+- Menus, movies, briefings, and score screens are still drawn for 640x400. They use a centered 640x400 view of the page and are fitted with bars that keep clear of the Dynamic Island. This includes the briefing opened from the in-game Options menu.
+- On phones, only landscape-right is allowed while missions fill the screen. That puts the Dynamic Island over the left edge of the map instead of the build sidebar.
+
+When the device is folded, unfolded, or the safe area changes, the frame is re-laid out and the last frame is redrawn immediately, even while a menu is idle. Touch input uses the same layout as rendering.
+
+Launch with `RA_IOS_LAYOUT_DEBUG=1` to log the window size, safe-area insets, orientation, the shown part of the page, its screen rectangle, and each touch in game coordinates.
 
 ## Fullscreen
 

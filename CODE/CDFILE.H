@@ -45,6 +45,7 @@ class CDFileClass : public BufferIOFileClass
 		static void Set_CD_Drive(int drive);
 		static int  Get_CD_Drive(void) {return(CurrentCDDrive);};
 		static int  Get_Last_CD_Drive(void) {return(LastCDDrive);};
+		static char const * Data_Folder(int index);
 
 	private:
 

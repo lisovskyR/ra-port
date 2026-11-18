@@ -11,6 +11,11 @@
 #include "ra_aspect_viewport.h"
 #include <mmsystem.h>
 
+#if defined(RA_IOS)
+#include "ios_window_scene.h"
+#include "mobile_safe_area.h"
+#endif
+
 static SDL_Window *MacWindow = 0;
 static SDL_Renderer *MacRenderer = 0;
 static SDL_Texture *MacTexture = 0;
@@ -30,6 +35,36 @@ static unsigned char MacKeyState[256];
 static unsigned char MacToggleState[256];
 static POINT MacMousePoint = {0, 0};
 static bool MacUnmodifiedKeyDispatch = false;
+/* Size of the frame currently held in MacFrame/MacTexture, and of the texture. */
+static int MacFrameWidth = 0;
+static int MacFrameHeight = 0;
+static int MacTextureWidth = 0;
+static int MacTextureHeight = 0;
+
+/*
+ * Part of the game page that is on screen (MacSDL_SetViewRect). On a page
+ * taller than 640x400, menus use a centered 640x400 view and missions use the
+ * whole page, filling the window.
+ */
+struct MacViewRect {
+	int page_w;
+	int page_h;
+	SDL_Rect rect;
+	bool fill;
+	bool valid;
+};
+static MacViewRect MacView;
+
+/* Largest stretch, in percent, accepted to fill the window with a mission page. */
+static int const MAC_FILL_MAX_STRETCH_PERCENT = 3;
+
+/* Where a frame goes on screen. Drawing uses `output`; input uses `window`. */
+struct MacLayout {
+	SDL_Rect source;           /* region of the frame shown, in frame pixels */
+	RAAspectViewport window;   /* destination in window points */
+	RAAspectViewport output;   /* destination in renderer pixels */
+};
+static MacLayout MacPresentedLayout;
 
 #if defined(RA_MOBILE_TOUCH)
 extern bool InMovie;
@@ -78,24 +113,84 @@ static LPARAM mac_pack_xy(int x, int y)
 	return (LPARAM)(((y & 0xFFFF) << 16) | (x & 0xFFFF));
 }
 
-static RAAspectViewport mac_window_viewport(void)
+/*
+ * Window edges the game frame must keep clear of, scaled from window points by
+ * `scale`. On iOS this is the sensor-housing (Dynamic Island) edge reported by
+ * UIKit. It matters on squarer screens such as both iPhone Duo displays, where
+ * the 640x400 frame spans the full width. The home indicator is auto-hidden, so
+ * its bottom inset stays usable.
+ */
+static RAViewportInsets mac_layout_insets(float scale)
 {
+	RAViewportInsets insets = {0, 0, 0, 0};
+#if defined(RA_IOS)
+	MobileSafeArea area;
+	if (MacWindow && MobileSafeArea_Query(MacWindow, &area)) {
+		area = MobileSafeArea_ResolveSensorHousing(area);
+		insets.left = (int)(area.left * scale + 0.5f);
+		insets.top = (int)(area.top * scale + 0.5f);
+		insets.right = (int)(area.right * scale + 0.5f);
+	}
+#else
+	(void)scale;
+#endif
+	return insets;
+}
+
+/*
+ * Layout of a frame_w x frame_h frame: which part of it is shown and where.
+ * Game pages show the current view rect; other frames (movies) are shown whole.
+ * A mission view fills the window; everything else is fitted with bars and kept
+ * clear of the safe-area insets.
+ */
+static MacLayout mac_layout_for(int frame_w, int frame_h)
+{
+	MacLayout layout;
+	layout.source.x = 0;
+	layout.source.y = 0;
+	layout.source.w = frame_w;
+	layout.source.h = frame_h;
+	bool fill = false;
+	if (MacView.valid && frame_w == MacView.page_w && frame_h == MacView.page_h) {
+		layout.source = MacView.rect;
+		fill = MacView.fill;
+	}
+
 	int window_w = MacWidth;
 	int window_h = MacHeight;
 	if (MacWindow) {
 		SDL_GetWindowSize(MacWindow, &window_w, &window_h);
 	}
-	return RA_CalculateAspectViewport(MacWidth, MacHeight, window_w, window_h);
-}
-
-static RAAspectViewport mac_renderer_viewport(int source_w, int source_h)
-{
-	int output_w = source_w;
-	int output_h = source_h;
+	int output_w = window_w;
+	int output_h = window_h;
 	if (MacRenderer) {
 		SDL_GetRendererOutputSize(MacRenderer, &output_w, &output_h);
 	}
-	return RA_CalculateAspectViewport(source_w, source_h, output_w, output_h);
+	float scale = window_w > 0 ? (float)output_w / (float)window_w : 1.0f;
+
+	if (fill) {
+		layout.window = RA_CalculateFillViewport(layout.source.w, layout.source.h, window_w, window_h, MAC_FILL_MAX_STRETCH_PERCENT);
+		layout.output = RA_CalculateFillViewport(layout.source.w, layout.source.h, output_w, output_h, MAC_FILL_MAX_STRETCH_PERCENT);
+	} else {
+		layout.window = RA_CalculateInsetAspectViewport(layout.source.w, layout.source.h, window_w, window_h, mac_layout_insets(1.0f));
+		layout.output = RA_CalculateInsetAspectViewport(layout.source.w, layout.source.h, output_w, output_h, mac_layout_insets(scale));
+	}
+	return layout;
+}
+
+/* Layout of the frame on screen, or of the current mode before the first frame. */
+static MacLayout mac_current_layout(void)
+{
+	if (MacFrameWidth > 0 && MacFrameHeight > 0) {
+		return mac_layout_for(MacFrameWidth, MacFrameHeight);
+	}
+	return mac_layout_for(MacWidth, MacHeight);
+}
+
+/* Maps a point in window points to game coordinates; returns whether it was inside the frame. */
+static bool mac_window_to_logical(MacLayout const &layout, int screen_x, int screen_y, int *logical_x, int *logical_y)
+{
+	return RA_MapViewportPoint(layout.window, layout.source.w, layout.source.h, screen_x, screen_y, logical_x, logical_y) != 0;
 }
 
 static bool mac_to_logical_point(int *x, int *y)
@@ -103,8 +198,42 @@ static bool mac_to_logical_point(int *x, int *y)
 	if (!x || !y || !MacWindow || MacWidth <= 0 || MacHeight <= 0) {
 		return false;
 	}
-	RAAspectViewport viewport = mac_window_viewport();
-	return RA_MapViewportPoint(viewport, MacWidth, MacHeight, *x, *y, x, y) != 0;
+	return mac_window_to_logical(mac_current_layout(), *x, *y, x, y);
+}
+
+int MacSDL_PreferredScreenHeight(int width, int height)
+{
+#if defined(RA_IOS)
+	int display_w = 0;
+	int display_h = 0;
+	if (height == RA_PAGE_BASE_HEIGHT && RedAlertIOS_GetLandscapeDisplaySize(&display_w, &display_h)) {
+		int preferred = RA_MissionPageHeight(width, display_w, display_h);
+		if (preferred > height) {
+			RedAlertIOS_UseFullScreenMissions();
+		}
+		return preferred;
+	}
+#else
+	(void)width;
+#endif
+	return height;
+}
+
+void MacSDL_SetViewRect(int page_width, int page_height, int x, int y, int width, int height, bool fill_screen)
+{
+	if (page_width <= 0 || page_height <= 0 || width <= 0 || height <= 0 ||
+			x < 0 || y < 0 || x + width > page_width || y + height > page_height) {
+		MacView.valid = false;
+		return;
+	}
+	MacView.page_w = page_width;
+	MacView.page_h = page_height;
+	MacView.rect.x = x;
+	MacView.rect.y = y;
+	MacView.rect.w = width;
+	MacView.rect.h = height;
+	MacView.fill = fill_screen;
+	MacView.valid = true;
 }
 
 static BOOL mac_queue_message(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -406,8 +535,7 @@ static bool mobile_logical_point(float normalized_x, float normalized_y, int *lo
 	screen_x = RA_ClampInt(screen_x, 0, window_w - 1);
 	screen_y = RA_ClampInt(screen_y, 0, window_h - 1);
 
-	RAAspectViewport viewport = RA_CalculateAspectViewport(MacWidth, MacHeight, window_w, window_h);
-	return RA_MapViewportPoint(viewport, MacWidth, MacHeight, screen_x, screen_y, logical_x, logical_y) != 0;
+	return mac_window_to_logical(mac_current_layout(), screen_x, screen_y, logical_x, logical_y);
 }
 
 static void mobile_emit_pan_key(void *, int vk)
@@ -415,9 +543,20 @@ static void mobile_emit_pan_key(void *, int vk)
 	mac_queue_unmodified_key_pulse(vk);
 }
 
+/* Size, in game pixels, of the part of the frame on screen. */
+static void mobile_logical_size(int *width, int *height)
+{
+	MacLayout layout = mac_current_layout();
+	*width = layout.source.w;
+	*height = layout.source.h;
+}
+
 static void mobile_emit_pan(float dx, float dy)
 {
-	MobilePan_EmitFingerDelta(&MobilePan, dx, dy, MacWidth, MacHeight, mobile_emit_pan_key, 0);
+	int logical_w = 0;
+	int logical_h = 0;
+	mobile_logical_size(&logical_w, &logical_h);
+	MobilePan_EmitFingerDelta(&MobilePan, dx, dy, logical_w, logical_h, mobile_emit_pan_key, 0);
 }
 
 static void mobile_queue_touch_output(MobileTouchGestureOutput const *out)
@@ -461,6 +600,8 @@ static void mac_destroy_video_objects(void)
 		SDL_DestroyTexture(MacTexture);
 		MacTexture = 0;
 	}
+	MacTextureWidth = 0;
+	MacTextureHeight = 0;
 	if (MacRenderer) {
 		SDL_DestroyRenderer(MacRenderer);
 		MacRenderer = 0;
@@ -508,6 +649,8 @@ bool MacSDL_SetMode(int width, int height)
 		SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
 #endif
 #if defined(RA_IOS)
+		/* Phones with full-screen missions allow only the side that keeps the Dynamic Island over the map. */
+		SDL_SetHint(SDL_HINT_ORIENTATIONS, RedAlertIOS_OrientationHint());
 		SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "1");
 #endif
 #if defined(RA_MOBILE_TOUCH)
@@ -534,9 +677,25 @@ bool MacSDL_SetMode(int width, int height)
 		return true;
 	}
 
+#if defined(RA_IOS)
+	/*
+	 * The window always fills the scene on iOS, so a new mode (a movie's frame
+	 * size, say) only changes the logical size. Keep the window, renderer, and
+	 * GL view; MacSDL_Present8 resizes the texture to each frame.
+	 */
+	if (MacWindow) {
+		MacWidth = width;
+		MacHeight = height;
+		return true;
+	}
+#endif
+
 	mac_destroy_video_objects();
 	MacWidth = width;
 	MacHeight = height;
+	MacFrameWidth = 0;
+	MacFrameHeight = 0;
+	memset(&MacPresentedLayout, 0, sizeof(MacPresentedLayout));
 
 	if (mac_fullscreen_env_requested()) {
 		MacFullscreen = true;
@@ -547,6 +706,12 @@ bool MacSDL_SetMode(int width, int height)
 #endif
 #if defined(RA_IOS)
 	window_flags &= ~SDL_WINDOW_RESIZABLE;
+	/*
+	 * Render at the display's native pixel density. Without this the GL drawable
+	 * is one pixel per point, so the 640x400 frame is shrunk below its own size
+	 * (dropping rows and columns) and then upscaled by the compositor.
+	 */
+	window_flags |= SDL_WINDOW_ALLOW_HIGHDPI;
 #endif
 	if (MacFullscreen) {
 		window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -555,6 +720,10 @@ bool MacSDL_SetMode(int width, int height)
 	if (!MacWindow) {
 		return false;
 	}
+#if defined(RA_IOS)
+	/* Must happen before the renderer creates its GL view, so it gets the scene's size. */
+	RedAlertIOS_AttachWindowToScene(MacWindow);
+#endif
 
 	Uint32 renderer_flags = SDL_RENDERER_SOFTWARE;
 #if defined(RA_MOBILE_TOUCH)
@@ -572,6 +741,8 @@ bool MacSDL_SetMode(int width, int height)
 	}
 	SDL_SetRenderDrawColor(MacRenderer, 0, 0, 0, 255);
 	MacTexture = SDL_CreateTexture(MacRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
+	MacTextureWidth = MacTexture ? width : 0;
+	MacTextureHeight = MacTexture ? height : 0;
 	return MacTexture != 0;
 }
 
@@ -603,6 +774,74 @@ void MacSDL_SetPalette(PALETTEENTRY const *entries, int count)
 	}
 }
 
+static bool mac_same_viewport(RAAspectViewport a, RAAspectViewport b)
+{
+	return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+}
+
+static bool mac_same_layout(MacLayout const &a, MacLayout const &b)
+{
+	return a.source.x == b.source.x && a.source.y == b.source.y && a.source.w == b.source.w && a.source.h == b.source.h &&
+		mac_same_viewport(a.output, b.output);
+}
+
+static bool mac_layout_debug(void)
+{
+	static int enabled = -1;
+	if (enabled < 0) {
+		enabled = getenv("RA_IOS_LAYOUT_DEBUG") != 0 ? 1 : 0;
+	}
+	return enabled != 0;
+}
+
+/* Draws the frame held in MacTexture into the layout for the current window, view, and safe area. */
+static void mac_draw_frame(void)
+{
+	if (!MacRenderer || !MacTexture || MacFrameWidth <= 0 || MacFrameHeight <= 0) {
+		return;
+	}
+	MacLayout layout = mac_layout_for(MacFrameWidth, MacFrameHeight);
+	if (layout.output.w <= 0 || layout.output.h <= 0) {
+		return;
+	}
+	SDL_Rect destination;
+	destination.x = layout.output.x;
+	destination.y = layout.output.y;
+	destination.w = layout.output.w;
+	destination.h = layout.output.h;
+	SDL_SetRenderDrawColor(MacRenderer, 0, 0, 0, 255);
+	SDL_RenderClear(MacRenderer);
+	SDL_RenderCopy(MacRenderer, MacTexture, &layout.source, &destination);
+	SDL_RenderPresent(MacRenderer);
+
+	if (mac_layout_debug() && !mac_same_layout(layout, MacPresentedLayout)) {
+		int output_w = 0;
+		int output_h = 0;
+		SDL_GetRendererOutputSize(MacRenderer, &output_w, &output_h);
+		SDL_Log("RA_LAYOUT: output=%dx%d frame=%dx%d source=(%d,%d %dx%d) viewport=(%d,%d %dx%d)",
+			output_w, output_h, MacFrameWidth, MacFrameHeight,
+			layout.source.x, layout.source.y, layout.source.w, layout.source.h,
+			layout.output.x, layout.output.y, layout.output.w, layout.output.h);
+	}
+	MacPresentedLayout = layout;
+}
+
+/*
+ * Folding or unfolding an iPhone Duo, rotating to the other landscape side, or
+ * returning from the background changes the window size or the safe area while
+ * the game may be sitting in an idle menu that draws nothing new. Redraw the
+ * last frame right away when its layout no longer matches.
+ */
+static void mac_refresh_layout(bool force)
+{
+	if (!MacRenderer || !MacTexture || MacFrameWidth <= 0 || MacFrameHeight <= 0) {
+		return;
+	}
+	if (force || !mac_same_layout(mac_layout_for(MacFrameWidth, MacFrameHeight), MacPresentedLayout)) {
+		mac_draw_frame();
+	}
+}
+
 static void mac_sdl_pump_events(bool allow_idle_delay)
 {
 	if (!MacSDLReady) {
@@ -617,6 +856,7 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 #endif
 	SDL_Event event;
 	bool saw_sdl_event = false;
+	bool force_redraw = false;
 	while (SDL_PollEvent(&event)) {
 		saw_sdl_event = true;
 		switch (event.type) {
@@ -650,7 +890,11 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 			case SDL_FINGERDOWN: {
 				int x = 0;
 				int y = 0;
-				if (!mobile_logical_point(event.tfinger.x, event.tfinger.y, &x, &y)) {
+				bool inside = mobile_logical_point(event.tfinger.x, event.tfinger.y, &x, &y);
+				if (mac_layout_debug()) {
+					SDL_Log("RA_TOUCH: normalized=(%.3f,%.3f) game=(%d,%d) inside=%d", event.tfinger.x, event.tfinger.y, x, y, inside ? 1 : 0);
+				}
+				if (!inside) {
 					break;
 				}
 				MobileTouchGestureOutput out;
@@ -693,7 +937,10 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 
 			case SDL_MULTIGESTURE:
 				if (MobileTouch.secondary_active) {
-					MobilePan_IgnoreMultiGestureCenter(&MobilePan, event.mgesture.x, event.mgesture.y, MacWidth, MacHeight, mobile_emit_pan_key, 0);
+					int logical_w = 0;
+					int logical_h = 0;
+					mobile_logical_size(&logical_w, &logical_h);
+					MobilePan_IgnoreMultiGestureCenter(&MobilePan, event.mgesture.x, event.mgesture.y, logical_w, logical_h, mobile_emit_pan_key, 0);
 				}
 				break;
 #endif
@@ -716,9 +963,17 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 				break;
 			}
 
+			case SDL_APP_DIDENTERFOREGROUND:
+			case SDL_RENDER_TARGETS_RESET:
+				force_redraw = true;
+				break;
+
 			default:
 				break;
 		}
+	}
+	if (saw_sdl_event) {
+		mac_refresh_layout(force_redraw);
 	}
 #if defined(RA_MOBILE_TOUCH)
 	mobile_idle_delay(allow_idle_delay, saw_sdl_event);
@@ -775,8 +1030,20 @@ void MacSDL_Present8(unsigned char const *pixels, int width, int height, int pit
 	}
 
 	mac_sdl_pump_events(false);
-	if (!MacRenderer || !MacTexture) {
+	if (!MacRenderer) {
 		return;
+	}
+	if (!MacTexture || width != MacTextureWidth || height != MacTextureHeight) {
+		/* Movies and the game page can differ in size; keep the texture matched to the frame. */
+		if (MacTexture) {
+			SDL_DestroyTexture(MacTexture);
+		}
+		MacTexture = SDL_CreateTexture(MacRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
+		MacTextureWidth = MacTexture ? width : 0;
+		MacTextureHeight = MacTexture ? height : 0;
+		if (!MacTexture) {
+			return;
+		}
 	}
 
 	int needed = width * height;
@@ -798,19 +1065,9 @@ void MacSDL_Present8(unsigned char const *pixels, int width, int height, int pit
 	}
 
 	SDL_UpdateTexture(MacTexture, 0, MacFrame, width * (int)sizeof(uint32_t));
-	RAAspectViewport viewport = mac_renderer_viewport(width, height);
-	SDL_Rect destination;
-	destination.x = viewport.x;
-	destination.y = viewport.y;
-	destination.w = viewport.w;
-	destination.h = viewport.h;
-	if (destination.w <= 0 || destination.h <= 0) {
-		return;
-	}
-	SDL_SetRenderDrawColor(MacRenderer, 0, 0, 0, 255);
-	SDL_RenderClear(MacRenderer);
-	SDL_RenderCopy(MacRenderer, MacTexture, 0, &destination);
-	SDL_RenderPresent(MacRenderer);
+	MacFrameWidth = width;
+	MacFrameHeight = height;
+	mac_draw_frame();
 }
 
 extern "C" BOOL MacWin_PeekMessage(MSG *msg, HWND, UINT, UINT, UINT remove)
