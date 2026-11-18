@@ -82,6 +82,18 @@ void TabClass::Draw_It(bool complete)
 		** Use the new sidebar art for 640x400
 		*/
 		CC_Draw_Shape(TabShape, 0, 0, 0, WINDOW_MAIN, SHAPE_NORMAL);
+
+		/*
+		**	Port: in the full-screen mission view (a page taller than 640x400),
+		**	fill the gap between the Options tab and the credits tab with blank
+		**	tab plates, so the top row is one metal bar instead of a black strip.
+		**	The credits, timer, and sidebar tabs are drawn over them afterwards.
+		*/
+		if (SeenBuff.Get_Height() > 400) {
+			for (int platex = EVA_WIDTH * RESFACTOR; platex < (320 - EVA_WIDTH) * RESFACTOR; platex += EVA_WIDTH * RESFACTOR) {
+				CC_Draw_Shape(TabShape, 0, platex, 0, WINDOW_MAIN, SHAPE_NORMAL);
+			}
+		}
 #else
 		CC_Draw_Shape(TabShape, 2, 0, 0, WINDOW_MAIN, SHAPE_NORMAL);
 #endif

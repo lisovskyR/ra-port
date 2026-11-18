@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <set>
 #include <string>
 #include <vector>
 #include <stdio.h>
@@ -259,6 +260,109 @@ static bool use_resource_root(std::string const &root)
 	return path_exists(config_path());
 }
 
+/*
+ * Files that an earlier build bundled but this one no longer has, such as a
+ * language or voice pack taken out of assets/redalert, are removed from the
+ * writable copy. The bundle's file list is kept in BUNDLED.LST so only files
+ * the sync itself placed are ever removed. The player's REDALERT.INI stays.
+ */
+static char const *bundled_manifest_name(void)
+{
+	return "BUNDLED.LST";
+}
+
+static bool is_player_settings(std::string const &relative)
+{
+	std::string::size_type slash = relative.find_last_of('/');
+	std::string name = slash == std::string::npos ? relative : relative.substr(slash + 1);
+	return strcasecmp(name.c_str(), "REDALERT.INI") == 0;
+}
+
+static void list_files_recursive(std::string const &root, std::string const &relative, std::vector<std::string> &files)
+{
+	std::string path = relative.empty() ? root : join_path(root, relative.c_str());
+	DIR *dir = opendir(path.c_str());
+	if (!dir) {
+		return;
+	}
+	for (;;) {
+		struct dirent *entry = readdir(dir);
+		if (!entry) {
+			break;
+		}
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+			continue;
+		}
+		std::string child = relative.empty() ? std::string(entry->d_name) : join_path(relative, entry->d_name);
+		struct stat info;
+		if (lstat(join_path(root, child.c_str()).c_str(), &info) != 0) {
+			continue;
+		}
+		if (S_ISDIR(info.st_mode)) {
+			list_files_recursive(root, child, files);
+		} else if (S_ISREG(info.st_mode)) {
+			files.push_back(child);
+		}
+	}
+	closedir(dir);
+}
+
+static std::set<std::string> read_manifest(std::string const &path)
+{
+	std::set<std::string> names;
+	FILE *file = fopen(path.c_str(), "r");
+	if (!file) {
+		return names;
+	}
+	char line[PATH_MAX];
+	while (fgets(line, sizeof(line), file)) {
+		size_t length = strlen(line);
+		while (length > 0 && (line[length - 1] == '\n' || line[length - 1] == '\r')) {
+			line[--length] = '\0';
+		}
+		if (length > 0 && strstr(line, "..") == NULL && line[0] != '/') {
+			names.insert(line);
+		}
+	}
+	fclose(file);
+	return names;
+}
+
+static bool write_manifest(std::string const &path, std::vector<std::string> const &files)
+{
+	std::string temporary = path + ".tmp";
+	FILE *file = fopen(temporary.c_str(), "w");
+	if (!file) {
+		return false;
+	}
+	bool ok = true;
+	for (size_t index = 0; index < files.size(); ++index) {
+		if (fprintf(file, "%s\n", files[index].c_str()) < 0) {
+			ok = false;
+		}
+	}
+	if (fclose(file) != 0) {
+		ok = false;
+	}
+	return ok && rename(temporary.c_str(), path.c_str()) == 0;
+}
+
+static void remove_unbundled_files(std::string const &source, std::string const &dest)
+{
+	std::vector<std::string> files;
+	list_files_recursive(source, std::string(), files);
+	std::set<std::string> bundled(files.begin(), files.end());
+
+	std::string manifest = join_path(dest, bundled_manifest_name());
+	std::set<std::string> previous = read_manifest(manifest);
+	for (std::set<std::string>::const_iterator name = previous.begin(); name != previous.end(); ++name) {
+		if (bundled.count(*name) == 0 && !is_player_settings(*name)) {
+			unlink(join_path(dest, name->c_str()).c_str());
+		}
+	}
+	write_manifest(manifest, files);
+}
+
 static bool sync_bundled_assets_to(std::string const &writable_root)
 {
 	char *base_path = SDL_GetBasePath();
@@ -276,6 +380,7 @@ static bool sync_bundled_assets_to(std::string const &writable_root)
 	if (!sync_directory_recursive(source.c_str(), dest.c_str())) {
 		return false;
 	}
+	remove_unbundled_files(source, dest);
 	return path_exists(join_path(writable_root, config_path()).c_str());
 }
 

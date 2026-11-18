@@ -670,11 +670,30 @@ int main(int argc, char * argv[])
 }
 
 
+/*
+**	Port: height of the game page when the platform asked for one taller than
+**	640x400 (see MacSDL_PreferredScreenHeight), else 400. Missions then use the
+**	whole page; menus and other 640x400 screens use a centered 640x400 view.
+*/
+static int MissionPageHeight = 400;
+
 /* Initialize DirectDraw and surfaces */
 bool InitDDraw(void)
 	{
 	DDSCAPS	surface_capabilities;
 	BOOL video_success = FALSE;
+
+	/*
+	**	Port: displays squarer than 640x400 get a taller page, so missions show
+	**	extra map rows instead of letterbox bars.
+	*/
+	if (ScreenHeight == 400) {
+		int preferred_height = MacSDL_PreferredScreenHeight(ScreenWidth, ScreenHeight);
+		if (preferred_height > 400) {
+			ScreenHeight = preferred_height;
+			MissionPageHeight = preferred_height;
+		}
+	}
 
 	/* Set 640x400 video mode. If its not available then try for 640x480 */
 	if (ScreenHeight == 400)
@@ -780,19 +799,74 @@ bool InitDDraw(void)
 
 	ScreenHeight = 400;
 
-	if (VisiblePage.Get_Height() == 480)
-		{
-		SeenBuff.Attach(&VisiblePage, 0, 40, 640, 400);
-		HidPage.Attach(&HiddenPage, 0, 40, 640, 400);
-		}
-	else
-		{
-		SeenBuff.Attach(&VisiblePage, 0, 0, 640, 400);
-		HidPage.Attach(&HiddenPage, 0, 0, 640, 400);
-		}
+	/*
+	**	Screens are drawn for 640x400. On a taller page they go in a centered
+	**	640x400 view: 40 lines down in 640x480, 24 lines down in a 448-line page.
+	*/
+	int top = (VisiblePage.Get_Height() - 400) / 2;
+	if (top < 0) top = 0;
+	SeenBuff.Attach(&VisiblePage, 0, top, 640, 400);
+	HidPage.Attach(&HiddenPage, 0, top, 640, 400);
+	if (MissionPageHeight > 400) {
+		MacSDL_SetViewRect(VisiblePage.Get_Width(), VisiblePage.Get_Height(), 0, top, 640, 400, false);
+	}
 
 	return true;
 	}
+
+
+/***********************************************************************************************
+ * Set_Mission_View -- Switches between the full mission page and the 640x400 screen view.    *
+ *                                                                                             *
+ *    Port addition. When the page is taller than 640x400, missions draw on the whole page,   *
+ *    so the tactical map gets extra rows and fills the display. Menus, movies, and score     *
+ *    screens are drawn for 640x400 and use a centered 640x400 view of the page.              *
+ *                                                                                             *
+ * INPUT:   mission -- true for the whole-page mission view, false for the 640x400 view.       *
+ *                                                                                             *
+ * OUTPUT:  Returns whether the mission view was active before the call.                       *
+ *                                                                                             *
+ * WARNINGS:   Does nothing when the page is 640x400.                                          *
+ *=============================================================================================*/
+bool Set_Mission_View(bool mission)
+{
+	if (MissionPageHeight <= 400) {
+		return false;
+	}
+
+	int page_height = VisiblePage.Get_Height();
+	int height = mission ? page_height : 400;
+	int top = mission ? 0 : (page_height - 400) / 2;
+	bool was_mission = SeenBuff.Get_Height() == page_height;
+	if (SeenBuff.Get_Height() == height && SeenBuff.Get_YPos() == top) {
+		return was_mission;
+	}
+
+	SeenBuff.Attach(&VisiblePage, 0, top, 640, height);
+	HidPage.Attach(&HiddenPage, 0, top, 640, height);
+	WindowList[WINDOW_MAIN][WINDOWWIDTH] = SeenBuff.Get_Width();
+	WindowList[WINDOW_MAIN][WINDOWHEIGHT] = SeenBuff.Get_Height();
+	if (Window == WINDOW_MAIN) {
+		Change_Window(WINDOW_MAIN);
+	}
+	MacSDL_SetViewRect(VisiblePage.Get_Width(), page_height, 0, top, 640, height, mission);
+
+	if (mission) {
+		/*
+		**	Size the tactical map to the taller page and draw a complete frame now,
+		**	so nothing drawn for the 640x400 view is left on screen.
+		*/
+		HiddenPage.Clear();
+		if (Map.IsSidebarActive) {
+			Map.Set_View_Dimensions(0, 8 * RESFACTOR, ((320 - SidebarClass::SIDE_WIDTH) / ICON_PIXEL_W) * RESFACTOR);
+		} else {
+			Map.Set_View_Dimensions(0, 8 * RESFACTOR);
+		}
+		Map.Flag_To_Redraw(true);
+		Map.Render();
+	}
+	return was_mission;
+}
 
 
 /***********************************************************************************************

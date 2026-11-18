@@ -34,6 +34,11 @@ Options:
 
 Environment:
   RA_IOS_DEVELOPMENT_TEAM   Apple development team id for --device signing
+  RA_IOS_BUNDLE_ID          Bundle identifier (default: com.raport.redalert); device
+                            builds need one that your team can register
+  RA_IOS_APP_ICON           1024x1024 PNG to use as the app icon (default: assets/AppIcon-1024.png
+                            when present, otherwise the original design in ios/Assets.xcassets)
+  DEVELOPER_DIR             Xcode to build with (e.g. an Xcode 27 install for iOS 27 devices)
 
 Examples:
   scripts/build_ios_debug.sh
@@ -112,6 +117,12 @@ configure_project() {
     -DCMAKE_OSX_ARCHITECTURES="$ARCHS" \
     -DRA95_IOS_BUNDLED_ASSETS_DIR="$ROOT_DIR/assets/redalert"
   )
+  if [[ -n "${RA_IOS_BUNDLE_ID:-}" ]]; then
+    cmake_args+=(-DRA95_IOS_BUNDLE_ID="$RA_IOS_BUNDLE_ID")
+  fi
+  if [[ -n "${RA_IOS_APP_ICON:-}" ]]; then
+    cmake_args+=(-DRA95_IOS_APP_ICON="$RA_IOS_APP_ICON")
+  fi
   if ((${#CMAKE_ARGS[@]})); then
     cmake_args+=("${CMAKE_ARGS[@]}")
   fi

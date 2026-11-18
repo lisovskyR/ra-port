@@ -11,6 +11,83 @@ static int expect_int(int actual, int expected, char const *message)
 	return 0;
 }
 
+static RAViewportInsets make_insets(int left, int top, int right, int bottom)
+{
+	RAViewportInsets insets;
+	insets.left = left;
+	insets.top = top;
+	insets.right = right;
+	insets.bottom = bottom;
+	return insets;
+}
+
+static int expect_rect(RAAspectViewport actual, int x, int y, int w, int h, char const *name)
+{
+	if (actual.x != x || actual.y != y || actual.w != w || actual.h != h) {
+		fprintf(stderr, "FAIL: %s: got (%d,%d %dx%d) expected (%d,%d %dx%d)\n",
+			name, actual.x, actual.y, actual.w, actual.h, x, y, w, h);
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * iPhone Duo geometry in points, landscape: the folded outer display is
+ * 678x466 and the unfolded inner display is 951x669. Both are squarer than
+ * the 640x400 game frame, so the frame spans the full width and the sensor
+ * housing on a short edge would cover the sidebar or the map.
+ */
+static int inset_viewport_cases(void)
+{
+	RAViewportInsets none = make_insets(0, 0, 0, 0);
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 678, 466, none), 0, 21, 678, 423, "duo outer without insets")) return 1;
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 951, 669, none), 0, 37, 951, 594, "duo inner without insets")) return 1;
+
+	/* Housing on the right: the frame shrinks just enough and hugs the left edge. */
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 678, 466, make_insets(0, 0, 62, 0)), 0, 40, 616, 385, "duo outer housing right")) return 1;
+	/* Housing on the left: same size, pushed clear of the left edge. */
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 678, 466, make_insets(62, 0, 0, 0)), 62, 40, 616, 385, "duo outer housing left")) return 1;
+
+	/* Wide phones already pillarbox past the housing, so nothing moves. */
+	RAAspectViewport plain = RA_CalculateAspectViewport(640, 400, 852, 393);
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 852, 393, make_insets(59, 0, 0, 0)), plain.x, plain.y, plain.w, plain.h, "wide phone housing left")) return 1;
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 852, 393, make_insets(0, 0, 59, 0)), plain.x, plain.y, plain.w, plain.h, "wide phone housing right")) return 1;
+
+	/* Symmetric insets keep the frame centered. */
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 678, 466, make_insets(31, 0, 31, 0)), 31, 40, 616, 385, "symmetric insets")) return 1;
+
+	/* Bottom-only inset on a width-limited screen: room to spare, so it stays centered. */
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 951, 669, make_insets(0, 0, 0, 20)), 0, 37, 951, 594, "inner bottom inset fits")) return 1;
+
+	/* Insets that would leave no room are ignored instead of collapsing the frame. */
+	if (expect_rect(RA_CalculateInsetAspectViewport(640, 400, 678, 466, make_insets(400, 0, 400, 0)), 0, 21, 678, 423, "oversized insets ignored")) return 1;
+	return 0;
+}
+
+/*
+ * Full-screen missions: the iPhone Duo's displays are squarer than 640x400, so
+ * the page grows to 448 lines and is drawn edge to edge.
+ */
+static int mission_page_cases(void)
+{
+	if (expect_int(RA_MissionPageHeight(640, 678, 466), 448, "duo outer page height")) return 1;
+	if (expect_int(RA_MissionPageHeight(640, 951, 669), 448, "duo inner page height")) return 1;
+	if (expect_int(RA_MissionPageHeight(640, 1194, 834), 448, "11-inch tablet page height")) return 1;
+	if (expect_int(RA_MissionPageHeight(640, 1024, 768), 472, "4:3 tablet page height")) return 1;
+	if (expect_int(RA_MissionPageHeight(640, 874, 402), 400, "wide phone keeps 400")) return 1;
+	if (expect_int(RA_MissionPageHeight(640, 640, 400), 400, "640x400 display keeps 400")) return 1;
+	if (expect_int(RA_MissionPageHeight(640, 0, 466), 400, "unknown display keeps 400")) return 1;
+
+	/* A 448-line page fills both Duo displays; the stretch is under 2 percent. */
+	if (expect_rect(RA_CalculateFillViewport(640, 448, 678, 466, 3), 0, 0, 678, 466, "duo outer fills")) return 1;
+	if (expect_rect(RA_CalculateFillViewport(640, 448, 951, 669, 3), 0, 0, 951, 669, "duo inner fills")) return 1;
+	if (expect_rect(RA_CalculateFillViewport(640, 448, 2034, 1398, 3), 0, 0, 2034, 1398, "duo outer pixels fill")) return 1;
+	/* A 640x400 menu would stretch about 10 percent, so it keeps its bars. */
+	if (expect_rect(RA_CalculateFillViewport(640, 400, 678, 466, 3), 0, 21, 678, 423, "menu frame is not stretched")) return 1;
+	if (expect_rect(RA_CalculateFillViewport(640, 448, 0, 466, 3), 0, 0, 0, 0, "empty target")) return 1;
+	return 0;
+}
+
 int main(void)
 {
 	RAAspectViewport tablet = RA_CalculateAspectViewport(640, 400, 2550, 1490);
@@ -53,6 +130,9 @@ int main(void)
 	}
 	if (expect_int(logical_x, 0, "left pillarbox clamps to logical x")) return 1;
 	if (expect_int(logical_y, 26, "left pillarbox preserves logical y")) return 1;
+
+	if (inset_viewport_cases()) return 1;
+	if (mission_page_cases()) return 1;
 
 	return 0;
 }

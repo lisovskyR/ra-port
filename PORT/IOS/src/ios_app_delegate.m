@@ -4,7 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "SDL.h"
+#include "SDL_syswm.h"
+
 #import "SDL_uikitappdelegate.h"
+
+#include "ios_window_scene.h"
 
 @interface RedAlertIOSDelegate : SDLUIKitDelegate
 @end
@@ -12,6 +17,20 @@
 @interface SDLUIKitDelegate (RedAlertPrivate)
 - (void)postFinishLaunch;
 @end
+
+/*
+ * The app's single window scene. Apps built with the iOS 27 SDK must adopt the
+ * UIScene lifecycle; SDL2 still creates its UIWindows without a scene, so the
+ * runtime attaches them to this scene (see RedAlertIOS_AttachWindowToScene).
+ */
+static UIWindowScene *RedAlertConnectedScene = nil;
+
+/*
+ * Landscape sides the app allows. Full-screen missions on a phone narrow this
+ * to landscape-right, which puts the Dynamic Island (the top of the device)
+ * on the left, over the map instead of the build sidebar.
+ */
+static UIInterfaceOrientationMask RedAlertLandscapeMask = UIInterfaceOrientationMaskLandscape;
 
 static NSString *RedAlertGetAppDelegateClassName(id self, SEL selector)
 {
@@ -27,23 +46,20 @@ static void RedAlertOrientationDebug(char const *message)
 }
 
 /*
- * Apps built with the iOS 27 SDK must use the UIScene life cycle or UIKit
- * refuses to launch them. SDL2 creates its windows with initWithFrame: and
- * never gives them a scene, so attach each window SDL shows to the app's
- * window scene. Info.plist.in declares RedAlertSceneDelegate as the scene
- * delegate.
+ * SDL2 creates its windows with initWithFrame: and never gives them a scene,
+ * so every window SDL shows is attached to the app's window scene as it is
+ * made visible. Windows shown before the scene connects wait until it does.
  */
-static UIWindowScene *RedAlertWindowScene = nil;
 static NSMutableArray *RedAlertPendingWindows = nil;
 static IMP RedAlertOriginalMakeKeyAndVisible = NULL;
 
 static UIWindowScene *RedAlertFindWindowScene(void)
 {
-	if (RedAlertWindowScene) {
-		return RedAlertWindowScene;
+	if (RedAlertConnectedScene) {
+		return RedAlertConnectedScene;
 	}
 	for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-		if ([scene isKindOfClass:[UIWindowScene class]]) {
+		if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState != UISceneActivationStateUnattached) {
 			return (UIWindowScene *)scene;
 		}
 	}
@@ -57,7 +73,6 @@ static void RedAlertMakeKeyAndVisible(UIWindow *self, SEL selector)
 		if (scene) {
 			self.windowScene = scene;
 		} else {
-			/* The scene has not connected yet; attach this window when it does. */
 			if (!RedAlertPendingWindows) {
 				RedAlertPendingWindows = [[NSMutableArray alloc] init];
 			}
@@ -65,6 +80,100 @@ static void RedAlertMakeKeyAndVisible(UIWindow *self, SEL selector)
 		}
 	}
 	((void (*)(id, SEL))RedAlertOriginalMakeKeyAndVisible)(self, selector);
+}
+
+static void RedAlertRequestLandscapeGeometry(UIWindowScene *window_scene)
+{
+	if (@available(iOS 16.0, *)) {
+		if (!window_scene) {
+			window_scene = RedAlertFindWindowScene();
+		}
+		if (!window_scene) {
+			RedAlertOrientationDebug("no window scene for landscape request");
+			return;
+		}
+
+		UIWindowSceneGeometryPreferencesIOS *preferences =
+			[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:RedAlertLandscapeMask];
+		[window_scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
+			(void)error;
+			RedAlertOrientationDebug("landscape geometry request failed");
+		}];
+		[preferences release];
+
+		for (UIWindow *scene_window in window_scene.windows) {
+			[scene_window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
+		}
+	} else {
+		[UIViewController attemptRotationToDeviceOrientation];
+	}
+}
+
+/* The game can start setting up video before UIKit connects the first scene. */
+static UIWindowScene *RedAlertWaitForWindowScene(void)
+{
+	CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + 5.0;
+	while (!RedAlertFindWindowScene() && CFAbsoluteTimeGetCurrent() < deadline) {
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, TRUE);
+	}
+	return RedAlertFindWindowScene();
+}
+
+int RedAlertIOS_GetLandscapeDisplaySize(int *width, int *height)
+{
+	UIWindowScene *scene = RedAlertWaitForWindowScene();
+	if (!scene || !width || !height) {
+		return 0;
+	}
+	CGSize size = scene.screen.bounds.size;
+	CGFloat long_side = size.width > size.height ? size.width : size.height;
+	CGFloat short_side = size.width > size.height ? size.height : size.width;
+	*width = (int)(long_side + 0.5);
+	*height = (int)(short_side + 0.5);
+	return *width > 0 && *height > 0;
+}
+
+void RedAlertIOS_UseFullScreenMissions(void)
+{
+	if ([UIDevice currentDevice].userInterfaceIdiom != UIUserInterfaceIdiomPhone) {
+		return;
+	}
+	RedAlertLandscapeMask = UIInterfaceOrientationMaskLandscapeRight;
+	RedAlertRequestLandscapeGeometry(nil);
+}
+
+char const *RedAlertIOS_OrientationHint(void)
+{
+	return RedAlertLandscapeMask == UIInterfaceOrientationMaskLandscapeRight ? "LandscapeRight" : "LandscapeLeft LandscapeRight";
+}
+
+int RedAlertIOS_AttachWindowToScene(SDL_Window *window)
+{
+	if (!window) {
+		return 0;
+	}
+
+	UIWindowScene *scene = RedAlertWaitForWindowScene();
+	if (!scene) {
+		NSLog(@"RA_IOS: no window scene connected; the game window cannot be shown");
+		return 0;
+	}
+
+	SDL_SysWMinfo info;
+	SDL_VERSION(&info.version);
+	if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_UIKIT || !info.info.uikit.window) {
+		return 0;
+	}
+
+	UIWindow *uiwindow = info.info.uikit.window;
+	if (uiwindow.windowScene != scene) {
+		uiwindow.windowScene = scene;
+	}
+	/* Fill the scene: it is the folded or unfolded display on an iPhone Duo. */
+	uiwindow.frame = scene.coordinateSpace.bounds;
+	[uiwindow makeKeyAndVisible];
+	RedAlertRequestLandscapeGeometry(scene);
+	return 1;
 }
 
 @interface RedAlertSceneDelegate : UIResponder <UIWindowSceneDelegate>
@@ -77,25 +186,31 @@ static void RedAlertMakeKeyAndVisible(UIWindow *self, SEL selector)
 	if (![scene isKindOfClass:[UIWindowScene class]]) {
 		return;
 	}
-	[RedAlertWindowScene release];
-	RedAlertWindowScene = (UIWindowScene *)[scene retain];
+	RedAlertOrientationDebug("scene connected");
+	[RedAlertConnectedScene release];
+	RedAlertConnectedScene = [(UIWindowScene *)scene retain];
 	for (UIWindow *window in RedAlertPendingWindows) {
-		window.windowScene = RedAlertWindowScene;
+		window.windowScene = RedAlertConnectedScene;
 		[window makeKeyAndVisible];
 	}
 	[RedAlertPendingWindows removeAllObjects];
+	RedAlertRequestLandscapeGeometry(RedAlertConnectedScene);
 }
 
 - (void)sceneDidDisconnect:(UIScene *)scene
 {
-	if (scene == RedAlertWindowScene) {
-		[RedAlertWindowScene release];
-		RedAlertWindowScene = nil;
+	if (scene == RedAlertConnectedScene) {
+		[RedAlertConnectedScene release];
+		RedAlertConnectedScene = nil;
 	}
 }
 
 - (void)sceneDidBecomeActive:(UIScene *)scene
 {
+	RedAlertOrientationDebug("scene became active");
+	if ([scene isKindOfClass:[UIWindowScene class]]) {
+		RedAlertRequestLandscapeGeometry((UIWindowScene *)scene);
+	}
 	/* With scenes, UIKit no longer calls applicationDidBecomeActive: itself. */
 	id<UIApplicationDelegate> delegate = [UIApplication sharedApplication].delegate;
 	if ([delegate respondsToSelector:@selector(applicationDidBecomeActive:)]) {
@@ -119,66 +234,42 @@ static void RedAlertMakeKeyAndVisible(UIWindow *self, SEL selector)
 	RedAlertOriginalMakeKeyAndVisible = method_setImplementation(make_key, (IMP)RedAlertMakeKeyAndVisible);
 }
 
-- (void)redAlert_requestLandscapeGeometry
-{
-	if (@available(iOS 16.0, *)) {
-		UIWindowScene *window_scene = nil;
-		UIWindow *window = [self window];
-		if ([window respondsToSelector:@selector(windowScene)]) {
-			window_scene = window.windowScene;
-		}
-		if (!window_scene) {
-			for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-				if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState != UISceneActivationStateUnattached) {
-					window_scene = (UIWindowScene *)scene;
-					break;
-				}
-			}
-		}
-		if (!window_scene) {
-			RedAlertOrientationDebug("no window scene for landscape request");
-			return;
-		}
-
-		UIWindowSceneGeometryPreferencesIOS *preferences =
-			[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscape];
-		[window_scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
-			(void)error;
-			RedAlertOrientationDebug("landscape geometry request failed");
-		}];
-		[preferences release];
-
-		for (UIWindow *scene_window in window_scene.windows) {
-			[scene_window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
-		}
-	} else {
-		[UIViewController attemptRotationToDeviceOrientation];
-	}
-}
-
 - (UIInterfaceOrientationMask)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window
 {
-	return UIInterfaceOrientationMaskLandscape;
+	return RedAlertLandscapeMask;
+}
+
+- (UISceneConfiguration *)application:(UIApplication *)application
+	configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
+	options:(UISceneConnectionOptions *)options
+{
+	UISceneConfiguration *configuration =
+		[UISceneConfiguration configurationWithName:@"Default Configuration" sessionRole:connectingSceneSession.role];
+	configuration.delegateClass = [RedAlertSceneDelegate class];
+	return configuration;
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
 	RedAlertOrientationDebug("RedAlertIOSDelegate didFinishLaunching");
 	BOOL launched = [super application:application didFinishLaunchingWithOptions:launchOptions];
-	[self redAlert_requestLandscapeGeometry];
+	RedAlertRequestLandscapeGeometry(nil);
 	return launched;
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application
 {
 	RedAlertOrientationDebug("RedAlertIOSDelegate didBecomeActive");
-	[self redAlert_requestLandscapeGeometry];
+	if ([SDLUIKitDelegate instancesRespondToSelector:@selector(applicationDidBecomeActive:)]) {
+		[super applicationDidBecomeActive:application];
+	}
+	RedAlertRequestLandscapeGeometry(nil);
 }
 
 - (void)postFinishLaunch
 {
 	RedAlertOrientationDebug("RedAlertIOSDelegate postFinishLaunch");
-	[self redAlert_requestLandscapeGeometry];
+	RedAlertRequestLandscapeGeometry(nil);
 	[super postFinishLaunch];
 }
 

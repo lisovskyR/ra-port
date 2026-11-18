@@ -41,6 +41,7 @@ int main()
 	SDL_setenv("RA_FULLSCREEN", "0", 1);
 	SDL_SetHintWithPriority(SDL_HINT_RENDER_DRIVER, "software", SDL_HINT_OVERRIDE);
 	assert(MacSDL_SetMode(640, 400));
+
 	touch(SDL_FINGERDOWN, 1, .4f, .5f);
 	touch(SDL_FINGERDOWN, 2, .6f, .5f);
 	touch(SDL_FINGERMOTION, 1, .3f, .5f);

@@ -47,6 +47,7 @@ class MixFileClass : public Node<MixFileClass<T> >
 		static bool Cache(char const *filename, Buffer const * buffer=NULL);
 		static bool Offset(char const *filename, void ** realptr = 0, MixFileClass ** mixfile = 0, long * offset = 0, long * size = 0);
 		static void const * Retrieve(char const *filename);
+		void Search_First(void) {List.Add_Head(this);};	// Searched before every other mixfile.
 
 		struct SubBlock {
 			int32_t CRC;				// CRC code for embedded file.

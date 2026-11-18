@@ -368,6 +368,11 @@ extern bool Get_Broadcast_Addresses (void);
  *=============================================================================================*/
 bool Select_Game(bool fade)
 {
+	/*
+	**	Port: menus are drawn for 640x400, so leave the whole-page mission view.
+	*/
+	Set_Mission_View(false);
+
 	//	Enums in Select_Game() must match order of buttons in Main_Menu().
 #ifdef FIXIT_VERSION_3
 	enum {
@@ -2694,28 +2699,63 @@ static void Init_Heaps(void)
  * HISTORY:                                                                                    *
  *   06/03/1996 JLB : Created.                                                                 *
  *=============================================================================================*/
+/*
+**	The port keeps each disc's files in its own folder, so expansion mixfiles are looked for
+**	there as well as in the current directory. SC mixfiles are searched before every other
+**	mixfile: add-ons such as the Russian voice pack ship replacement speech, unit voices and
+**	movies in them, which only take effect when they override the stock files. Speech and
+**	movies are read from disk, so a large SC mixfile (movies) is not cached; only sound
+**	effects need their mixfile cached.
+*/
+#define	EXPANSION_CACHE_LIMIT	(32UL * 1024UL * 1024UL)
+
+static void Register_Expansion_Mixfiles(char const * pattern, bool override)
+{
+	static char registered[32][64];
+	static int registered_count = 0;
+
+	for (int folder = -1; folder < 0 || CDFileClass::Data_Folder(folder) != NULL; folder++) {
+		char const * prefix = (folder < 0) ? "" : CDFileClass::Data_Folder(folder);
+		char spec[_MAX_PATH];
+		sprintf(spec, "%s%s", prefix, pattern);
+
+		struct find_t ff;		// for _dos_findfirst
+		if (_dos_findfirst(spec, _A_NORMAL, &ff)) continue;
+		do {
+			/*
+			**	The same mixfile in a later folder (both discs) is registered only once.
+			*/
+			bool known = false;
+			for (int index = 0; index < registered_count; index++) {
+				if (stricmp(registered[index], ff.name) == 0) known = true;
+			}
+			if (known || registered_count >= (int)(sizeof(registered) / sizeof(registered[0]))) continue;
+			strncpy(registered[registered_count], ff.name, sizeof(registered[0]) - 1);
+			registered[registered_count][sizeof(registered[0]) - 1] = '\0';
+			registered_count++;
+
+			char path[_MAX_PATH];
+			sprintf(path, "%s%s", prefix, ff.name);
+			char * name = strdup(path);
+			MFCD * mix = new MFCD(name, &FastKey);
+			if (override && mix->Is_Valid()) {
+				mix->Search_First();
+				if (ff.size <= EXPANSION_CACHE_LIMIT) {
+					MFCD::Cache(name);
+				}
+			}
+		} while (!_dos_findnext(&ff));
+		_dos_findclose(&ff);
+	}
+}
+
 static void Init_Expansion_Files(void)
 {
-
 	/*
 	**	Before all else, cache any additional mixfiles.
 	*/
-	struct find_t ff;		// for _dos_findfirst
-	if (!_dos_findfirst("SC*.MIX", _A_NORMAL, &ff)) {
-		char * ptr;
-		do {
-			ptr = strdup(ff.name);
-			new MFCD(ptr, &FastKey);
-			MFCD::Cache(ptr);
-		} while (!_dos_findnext(&ff));
-	}
-	if (!_dos_findfirst("SS*.MIX", _A_NORMAL, &ff)) {
-		char * ptr;
-		do {
-			ptr = strdup(ff.name);
-			new MFCD(ptr, &FastKey);
-		} while (!_dos_findnext(&ff));
-	}
+	Register_Expansion_Mixfiles("SC*.MIX", true);
+	Register_Expansion_Mixfiles("SS*.MIX", false);
 }
 
 
@@ -2926,14 +2966,17 @@ static void Init_Bootstrap_Mixfiles(void)
 		CCFileClass::Set_Search_Drives(mac_cd_paths);
 	}
 
-#ifdef WOLAPI_INTEGRATION
+	/*
+	**	WOLAPI.MIX is opened even without Westwood Online support. It is the
+	**	first mixfile searched, so 3.03 language packs (such as the Russian
+	**	translation) ship their text, fonts and briefings in it.
+	*/
 	CCFileClass fileWolapiMix( "WOLAPI.MIX" );
 	if( fileWolapiMix.Is_Available() )
 	{
 		new MFCD( "WOLAPI.MIX", &FastKey );
 		MFCD::Cache( "WOLAPI.MIX" );
 	}
-#endif
 
 #ifdef FIXIT_CSII	//	Ok. ajw
 	CCFileClass file2("EXPAND2.MIX");
@@ -3196,8 +3239,8 @@ static void Bootstrap(void)
 //	GamePalette.Set();
 
 	/*
-	**	Initialize expansion files (if present). Expansion files must be located
-	**	in the current directory.
+	**	Initialize expansion files (if present). Expansion files are found in the
+	**	current directory or in a disc's data folder.
 	*/
 	Init_Expansion_Files();
 

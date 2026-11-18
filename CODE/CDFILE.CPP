@@ -436,6 +436,24 @@ int CDFileClass::Set_Search_Drives(char * pathlist)
  * HISTORY:                                                                                    *
  *    5/22/96 10:12AM ST : Created                                                             *
  *=============================================================================================*/
+/*
+**	Folders that hold each disc's files in the port: drive C: is the Allied disc and
+**	drive D: the Soviet disc.
+*/
+static char const * const DiscDataFolders[] = {
+	"assets/redalert/allies/",
+	"assets/redalert/soviet/",
+};
+
+char const * CDFileClass::Data_Folder(int index)
+{
+	if (index < 0 || index >= (int)(sizeof(DiscDataFolders) / sizeof(DiscDataFolders[0]))) {
+		return(NULL);
+	}
+	return(DiscDataFolders[index]);
+}
+
+
 void CDFileClass::Add_Search_Drive(char *path)
 {
 	char normalized[_MAX_PATH];
@@ -457,13 +475,13 @@ void CDFileClass::Add_Search_Drive(char *path)
 	if (normalized[1] == ':' && (normalized[2] == '/' || normalized[2] == '\0')) {
 		switch (toupper(normalized[0])) {
 			case 'C':
-				paths[0] = "assets/redalert/allies/";
+				paths[0] = DiscDataFolders[0];
 				paths[1] = "assets/redalert/allies/INSTALL/";
 				count = 2;
 				break;
 
 			case 'D':
-				paths[0] = "assets/redalert/soviet/";
+				paths[0] = DiscDataFolders[1];
 				paths[1] = "assets/redalert/soviet/INSTALL/";
 				count = 2;
 				break;
