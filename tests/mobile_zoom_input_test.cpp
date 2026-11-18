@@ -42,6 +42,24 @@ int main()
 	SDL_SetHintWithPriority(SDL_HINT_RENDER_DRIVER, "software", SDL_HINT_OVERRIDE);
 	assert(MacSDL_SetMode(640, 400));
 
+	// Pinch zoom is off by default: spreading two fingers does not magnify, and
+	// back-to-back two-finger taps are each a right click.
+	assert(!MobilePinchZoomEnabled);
+	touch(SDL_FINGERDOWN, 1, .4f, .5f);
+	touch(SDL_FINGERDOWN, 2, .6f, .5f);
+	touch(SDL_FINGERMOTION, 1, .3f, .5f);
+	touch(SDL_FINGERMOTION, 2, .7f, .5f);
+	touch(SDL_FINGERUP, 1, .3f, .5f);
+	touch(SDL_FINGERUP, 2, .7f, .5f);
+	assert(MobileZoom.scale == 1.0f);
+	right_clicks();
+	pair_tap();
+	pair_tap();
+	assert(right_clicks() == 2);
+	assert(MobileZoom.scale == 1.0f);
+	SDL_Delay(MobilePinch_DoubleTapMs + 1);
+
+	MobilePinchZoomEnabled = true;
 	touch(SDL_FINGERDOWN, 1, .4f, .5f);
 	touch(SDL_FINGERDOWN, 2, .6f, .5f);
 	touch(SDL_FINGERMOTION, 1, .3f, .5f);

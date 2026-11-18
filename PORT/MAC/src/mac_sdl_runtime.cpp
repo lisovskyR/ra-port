@@ -523,9 +523,16 @@ static int mac_vk_from_button(unsigned char button)
 }
 
 #if defined(RA_MOBILE_TOUCH)
+/*
+ * Pinch zoom (magnifying the frame up to 3x) is turned off: two fingers scroll
+ * the map and every quick two-finger tap is a right click. Set this to true to
+ * bring zoom back.
+ */
+static bool MobilePinchZoomEnabled = false;
+
 static bool mobile_zoom_applies(void)
 {
-	return !InMovie;
+	return MobilePinchZoomEnabled && !InMovie;
 }
 
 static bool mobile_logical_point(float normalized_x, float normalized_y, int *logical_x, int *logical_y)
@@ -1022,7 +1029,7 @@ static void mac_sdl_pump_events(bool allow_idle_delay)
 				if (MobilePinch_BothActive(&MobilePinch)) {
 					unsigned long now = mac_now_ms();
 					int tap_fingers = MobilePinch_EndTapFingers(&MobilePinch, now);
-					if (MobilePinch_RecordTap(&MobilePinch, now, tap_fingers)) {
+					if (MobilePinchZoomEnabled && MobilePinch_RecordTap(&MobilePinch, now, tap_fingers)) {
 						/* A two-finger double tap shows the whole frame again. */
 						MobileZoom_Init(&MobileZoom);
 					} else if (tap_fingers == 2 && MobileTouch.primary_active) {

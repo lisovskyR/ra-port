@@ -406,11 +406,10 @@ On Android and iOS:
 | Tap | Left click |
 | Drag | Left-button drag, e.g. a selection box |
 | Long press or quick two-finger tap | Right click, e.g. deselect units |
-| Two-finger drag | Scroll the map, or move the magnified view when zoomed in |
-| Pinch | Magnify the screen, up to 3x |
-| Quick two-finger double tap | Show the whole screen again |
+| Two-finger drag | Scroll the map |
 | Tap during a movie | Skip the movie |
 
+Pinch zoom is turned off. To bring it back, set `MobilePinchZoomEnabled` to `true` in `PORT/MAC/src/mac_sdl_runtime.cpp`. Pinching then magnifies the screen up to 3x, two fingers move the magnified view, and a quick two-finger double tap shows the whole screen again.
 
 ## Tests
 
